@@ -27,6 +27,7 @@
 #include "agi/viewport.h"
 #include "agirend/lighter.h"
 #include "agiworld/glowlight.h"
+#include "agiworld/glowtune.h"
 #include "agiworld/meshlight.h"
 #include "agiworld/meshset.h"
 #include "agiworld/quality.h"
@@ -2599,9 +2600,6 @@ static void HarvestWorldGlow(
 
         Vector3 local_centre = (cluster.Min + cluster.Max) * 0.5f;
 
-        Vector3 world_centre;
-        world_centre.Dot(local_centre, world);
-
         const Vector3 half = (cluster.Max - cluster.Min) * 0.5f;
         const f32 flare_size = std::max(std::max({half.x, half.y, half.z}), 0.05f);
 
@@ -2614,6 +2612,20 @@ static void HarvestWorldGlow(
             (cluster.AccumG * inv_verts / 255.0f) * intensity,
             (cluster.AccumB * inv_verts / 255.0f) * intensity,
         };
+
+        // Hand tuning from Open1560_RemixAPI.ini (agiworld/glowtune.h), applied in the vehicle's own
+        // space before the world transform, so an offset rides with the car however it turns. The
+        // mesh is centred on the vehicle, so "outward" means away from its centre line: one setting
+        // moves both tail lights of a pair out to their corners.
+        const agiGlowTuning tuning = agiResolveGlowTuning(texture->Tex.Name, agiClassifyGlowKind(texture->Tex.Name, tint));
+
+        if (tuning.HasEnabled && !tuning.Enabled)
+            continue;
+
+        local_centre = local_centre + agiGlowLocalOffset(tuning, local_centre);
+
+        Vector3 world_centre;
+        world_centre.Dot(local_centre, world);
 
         // agiGlowLightReach() is shared with the billboard route (agiAddGlowLight). The two used to
         // floor the reach differently - 14 here against 24 there - and since emitted intensity goes

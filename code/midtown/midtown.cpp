@@ -1246,7 +1246,7 @@ int main(int argc, char** argv)
 
     // Before init(argc, argv), deliberately: assignments overwrite, so loading the file first is
     // what lets a command-line switch override it. See agidx9/dx9config.h.
-    agiDX9LoadShaderConfig();
+    agiDX9LoadRemixConfig();
 
     mem::cmd_param::init(argc, argv);
 

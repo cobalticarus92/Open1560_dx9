@@ -27,6 +27,7 @@ define_dummy_symbol(agiworld_meshrend);
 #include "agisw/swrend.h"
 #include "agiworld/cardworld.h"
 #include "agiworld/glowlight.h"
+#include "agiworld/glowtune.h"
 #include "agiworld/meshlight.h"
 #include "agiworld/packnorm.h"
 #include "agiworld/quality.h"
@@ -3003,10 +3004,24 @@ void agiMeshSet::DrawCard(Vector3& position, f32 scale, u32 rotation, u32 color,
         //
         // Transforming by ViewParams().World is right for both: it is the matrix DrawCard is already
         // using, and it is a no-op for the identity case.
-        Vector3 world_position;
-        world_position.Dot(position, view_params.World);
+        //
+        // Hand tuning from Open1560_RemixAPI.ini (agiworld/glowtune.h) applies here, while the
+        // position is still local: an offset then follows the banger's own transform, and "outward"
+        // can be judged against the local X - for a street lamp, away from its pole. The kind is
+        // the harvest-time one, from the card's tint; a per-texture section avoids relying on it.
+        const Vector3 tint {static_cast<f32>((color >> 16) & 0xFF), static_cast<f32>((color >> 8) & 0xFF),
+            static_cast<f32>(color & 0xFF)};
 
-        agiAddGlowLight(world_position, color, scale, card_texture, u * 0.25f, v * 0.25f);
+        const agiGlowTuning tuning =
+            agiResolveGlowTuning(card_texture->Tex.Name, agiClassifyGlowKind(card_texture->Tex.Name, tint));
+
+        if (!tuning.HasEnabled || tuning.Enabled)
+        {
+            Vector3 world_position;
+            world_position.Dot(position + agiGlowLocalOffset(tuning, position), view_params.World);
+
+            agiAddGlowLight(world_position, color, scale, card_texture, u * 0.25f, v * 0.25f);
+        }
     }
 
     f32 x = matrix.m0.x * position.x + matrix.m1.x * position.y + matrix.m2.x * position.z + matrix.m3.x;

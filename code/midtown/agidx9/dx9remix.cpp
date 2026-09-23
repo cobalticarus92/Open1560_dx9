@@ -19,6 +19,7 @@
 #include "dx9remix.h"
 
 #include "agiworld/glowlight.h"
+#include "agiworld/glowtune.h"
 
 #include "dx9context.h"
 #include "dx9texdef.h"
@@ -141,6 +142,7 @@ namespace
         u32 GlowId;
         Vector3 Position;
         Vector3 Radiance;
+        f32 Radius;
         f32 Power;
         bool Dynamic;
         i32 Slot;
@@ -289,11 +291,30 @@ static bool ResolveGlow(const agiGlowLight& glow, f32 radius, Candidate& out)
     if ((kind == agiGlowKind::Headlight) && !PARAM_remix_headlights.get_or(false))
         return false;
 
+    // Hand tuning from Open1560_RemixAPI.ini (agiworld/glowtune.h), resolved against the kind as it
+    // stands NOW, after the texture's hue has been sampled. The per-kind brightness is already in
+    // `intensity` (it is the -light* switches); what is left is what a per-texture section sets, and
+    // the colour and sphere size, which have no switch of their own.
+    const agiGlowTuning tuning = agiResolveGlowTuning(name, kind);
+
+    if (tuning.HasEnabled && !tuning.Enabled)
+        return false;
+
+    if (tuning.HasIntensity)
+        intensity = std::max(tuning.Intensity, 0.0f);
+
+    if (tuning.HasColor)
+        color = {color.x * tuning.Color.x, color.y * tuning.Color.y, color.z * tuning.Color.z};
+
+    const f32 light_radius = tuning.HasRadius ? std::max(tuning.Radius, 0.01f) : radius;
+
     const f32 reach = std::clamp(glow.Radius, 1.0f, kMaxGlowReach);
     const f32 reach_ref = reach / 6.0f;
     const f32 gain = PARAM_remix_lightpower.get_or(1.5f) * reach_ref * reach_ref * intensity;
 
-    const Vector3 radiance = color * (gain / (kPi * radius * radius));
+    // Brightness is independent of the sphere's size by construction (see the note above), so a
+    // per-texture radius changes only how soft that lamp's shadows are.
+    const Vector3 radiance = color * (gain / (kPi * light_radius * light_radius));
 
     if (!IsFinite(radiance) || !IsFinite(glow.Position))
         return false;
@@ -311,6 +332,7 @@ static bool ResolveGlow(const agiGlowLight& glow, f32 radius, Candidate& out)
     // old velocity is what made lights fly off across the city in the programmable path.
     out.Position = glow.Position;
     out.Radiance = {std::max(radiance.x, 0.0f), std::max(radiance.y, 0.0f), std::max(radiance.z, 0.0f)};
+    out.Radius = light_radius;
     out.Power = power;
 
     // Vehicle lamps are dynamic even when the car is parked: it can pull away at any moment. Anything
@@ -324,8 +346,9 @@ static bool ResolveGlow(const agiGlowLight& glow, f32 radius, Candidate& out)
     return true;
 }
 
-static bool CreateLight(const Candidate& candidate, u16 generation, f32 radius, remixapi_LightHandle& out_handle)
+static bool CreateLight(const Candidate& candidate, u16 generation, remixapi_LightHandle& out_handle)
 {
+    const f32 radius = candidate.Radius;
     const Vector3& position = candidate.Position;
     const Vector3& radiance = candidate.Radiance;
 
@@ -392,8 +415,7 @@ static void ApplyConfigOverrides()
         return;
 
     char buffer[1024];
-    std::strncpy(buffer, overrides, sizeof(buffer) - 1);
-    buffer[sizeof(buffer) - 1] = '\0';
+    arts_strncpy(buffer, overrides, ARTS_TRUNCATE);
 
     for (char* entry = buffer; entry && *entry;)
     {
@@ -730,7 +752,7 @@ void agiDX9RemixApiSubmitFrame()
 
             const bool moved = (candidate.Position - light.Position).Mag2() > kMoveEpsilonSq;
             const bool recoloured = radiance_change > (old_power * kRadianceEpsilon);
-            const bool resized = light.Radius != radius;
+            const bool resized = light.Radius != candidate.Radius;
 
             if (!moved && !recoloured && !resized)
                 continue;
@@ -744,7 +766,7 @@ void agiDX9RemixApiSubmitFrame()
             light.Handle = nullptr;
             ++light.Generation;
 
-            if (!CreateLight(candidate, light.Generation, radius, light.Handle))
+            if (!CreateLight(candidate, light.Generation, light.Handle))
             {
                 light = {};
                 --s_live;
@@ -753,7 +775,7 @@ void agiDX9RemixApiSubmitFrame()
 
             light.Position = candidate.Position;
             light.Radiance = candidate.Radiance;
-            light.Radius = radius;
+            light.Radius = candidate.Radius;
             ++s_stats.Updated;
 
             continue;
@@ -769,14 +791,14 @@ void agiDX9RemixApiSubmitFrame()
 
         RemixLight& light = s_lights[free_cursor];
 
-        if (!CreateLight(candidate, 0, radius, light.Handle))
+        if (!CreateLight(candidate, 0, light.Handle))
             continue;
 
         light.GlowId = candidate.GlowId;
         light.Generation = 0;
         light.Position = candidate.Position;
         light.Radiance = candidate.Radiance;
-        light.Radius = radius;
+        light.Radius = candidate.Radius;
         light.SeenFrame = s_frame;
 
         ++s_live;

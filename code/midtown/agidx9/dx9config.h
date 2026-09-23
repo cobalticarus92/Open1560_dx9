@@ -18,21 +18,21 @@
 
 #pragma once
 
-// Loads Open1560-Shaders.ini, the tuning file for the programmable rendering path (Pathway B) and
-// the glow-driven lighting that feeds it.
+// Loads Open1560_RemixAPI.ini: what the game sends to RTX Remix through the Remix API - its glow
+// lights, and (Remix Plus) the sky and weather.
 //
-// Pathway B is not wired up (see agiDX9Pipeline::BeginGfx), so most keys in this file are inert.
-// The file itself documents which. See the D3D9 section of the README for the live switches.
-//
-// It does not introduce a settings system of its own: every key is simply an existing
-// mem::cmd_param, applied through mem::cmd_param::set() exactly as a command-line switch would be.
-// That keeps one source of truth for defaults and means anything tunable on the command line is
-// tunable from the file and vice versa.
+// Most keys are simply existing mem::cmd_params, applied through mem::cmd_param::set() exactly as a
+// command-line switch would be. That keeps one source of truth for defaults and means anything
+// tunable on the command line is tunable from the file and vice versa. The [Glow.<Kind>] and
+// [Glow:<TEXTURE>] sections are the exception: per-kind and per-texture offsets, sizes and colours
+// have no switch, and go to the glow tuning table (agiworld/glowtune.h). A kind section's enabled and
+// intensity are still that kind's switches.
 //
 // MUST be called before mem::cmd_param::init(argc, argv). Later assignments overwrite earlier ones,
 // so loading first is what gives the command line precedence over the file - the right way round,
 // since the file is a persistent preference and the command line is a deliberate one-off override.
 //
 // Writes a fully commented template on first run if the file is absent, so the available knobs are
-// discoverable without reading the source.
-void agiDX9LoadShaderConfig();
+// discoverable without reading the source. If the file it replaces, Open1560-Shaders.ini, is present
+// at that point, its settings are written into the new file, and the old one is not read again.
+void agiDX9LoadRemixConfig();

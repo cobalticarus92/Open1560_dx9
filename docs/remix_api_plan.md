@@ -239,8 +239,8 @@ comparison. Phase 3 is the real fix.
 
 ## 5. Settings
 
-All of these are command-line switches and `Open1560-Shaders.ini` keys (`[RemixAPI]` and the glow
-sections). A file generated before this change has no `[RemixAPI]` section: add the lines by hand, or
+All of these are command-line switches and `Open1560_RemixAPI.ini` keys. Per-kind and per-texture
+offsets, emitter sizes and colours are ini-only: see section 10. A file generated before this change has no `[RemixAPI]` section: add the lines by hand, or
 delete the file to regenerate it.
 
 | Key | Default | |
@@ -512,4 +512,32 @@ Both of these are silent failures, because an unknown key is simply ignored:
 5. Fog and Snow look similarly thick; Rain is clearly lighter.
 6. Rain: lightning flashes land with the thunder, and there is no lightning between claps.
 7. Quit to the menu and open the graphics options: Textured Sky shows your own setting, not "off".
+
+---
+
+## 10. Hand tuning: Open1560_RemixAPI.ini
+
+`Open1560_RemixAPI.ini` replaces `Open1560-Shaders.ini` (the README describes the migration). Besides
+the switches, it has sections that tune glow lights by kind and by texture. They are held in
+`agiworld/glowtune.{h,cpp}`:
+
+- **Enabled and intensity.** In a kind section these are the kind's existing switches, so the file
+  and the command line are two ways of setting one value. In a `[Glow:<TEXTURE>]` section they are
+  overrides.
+- **Offset and outward** are applied at harvest (`agiMeshSet::DrawCard` for billboards,
+  `HarvestWorldGlow` for glow meshes), in the flare's local space before its world transform, so an
+  offset rides with a moving car. Vehicles drive toward -Z (`aiVehicleMGR`: velocity is
+  `m2 * -speed`), so +Z is a vehicle's rear. "Outward" mirrors the X offset by the side of the
+  centre line a lamp is on.
+- **Radius and colour** are applied where the light is resolved for Remix (`ResolveGlow`). The
+  radius is carried per light, and changing it counts as a change that re-sends the light.
+
+The kind used at harvest is the provisional one, from the flare's tint. Remix resolves the kind again
+once it has sampled the texture's hue, and a warm-tinted lamp on a neutral sheet can change kind at
+that point. A `[Glow:<TEXTURE>]` section does not depend on either classification, so it is the
+precise way to target a lamp.
+
+The loader, the migration and the tuning table were run on Linux against a copy of an old
+`Open1560-Shaders.ini`: settings land on their own lines, bad values are reported and leave earlier
+values alone, and outward offsets mirror correctly.
 

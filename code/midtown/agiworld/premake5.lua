@@ -15,6 +15,8 @@ arts_component "agiworld"
         "getmesh.h",
         "getmodel.cpp",
         "getmodel.h",
+        "glowtune.cpp",
+        "glowtune.h",
         "meshlight.cpp",
         "meshlight.h",
         "meshload.cpp",

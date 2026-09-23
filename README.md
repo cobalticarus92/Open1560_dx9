@@ -176,15 +176,47 @@ every 120 frames.
 
 **Inert - the unwired programmable path**
 
-These are still registered so an existing `Open1560-Shaders.ini` does not start warning about unknown
-keys, but nothing reads them at runtime: `-d3d9quality`, `-d3d9sun`, `-d3d9reflect`, `-d3d9tonemap`,
+These are still registered so settings carried over from an old `Open1560-Shaders.ini` do not start
+warning about unknown keys, but nothing reads them at runtime: `-d3d9quality`, `-d3d9sun`, `-d3d9reflect`, `-d3d9tonemap`,
 `-d3d9exposure`, `-d3d9heightfog`, `-d3d9flashpower`, `-d3d9glowlights`, `-d3d9glowpower`,
 `-d3d9cellsize`, `-d3d9lightspec`, `-d3d9cellpack`.
 
-### Open1560-Shaders.ini
+### Open1560_RemixAPI.ini
 
-The renderer writes a fully commented `Open1560-Shaders.ini` next to the executable on first run.
-Every key in it is one of the switches above, applied through the same mechanism - so anything
-tunable on the command line is tunable from the file and vice versa, and the command line wins, which
-lets a setting be overridden for one run without editing the file. Delete it to regenerate it. It
-predates the tables above and covers mostly the inert keys; the tables are the complete set.
+The renderer writes a fully commented `Open1560_RemixAPI.ini` next to the executable on first run,
+organised around what the game sends to Remix: `[RemixAPI]`, `[GlowReach]`, one section per glow
+kind, `[RemixSky]`, `[Geometry]` and `[Debug]`. Keys outside the glow sections are the switches above,
+applied through the same mechanism, so the command line wins and a setting can be overridden for one
+run without editing the file. Delete it to regenerate it.
+
+It replaces `Open1560-Shaders.ini`. On the first run with the new name, any settings in the old file
+are written into the matching lines of the new one: a custom `lightlamp`, for example, becomes the
+`intensity` line of `[Glow.StreetLamps]`. Keys with no line of their own go into a `[Migrated]`
+section at the end. After that the old file is not read, and the log says it can be deleted.
+
+**Glow light sections** give each light a precise position and look. A kind section applies to every
+light of that kind:
+
+| Section | Lights |
+| --- | --- |
+| `[Glow.StreetLamps]` | Warm, unsaturated glows: street lamps and other static lighting |
+| `[Glow.TrafficSignals]` | Pure-hue glows: traffic signals |
+| `[Glow.VehicleLamps]` | Tail and brake lamps (`FXLTGLOWRED`, `FXLTGLOWAMBER`) |
+| `[Glow.Headlights]` | The headlight cone (`FXLTCONE`), off by default |
+| `[Glow.OtherGlows]` | Neutral whites: reverse lamps, coronas |
+
+A `[Glow:<TEXTURE>]` section, such as `[Glow:FXLTGLOWRED]`, targets every flare drawn with one glow
+texture, whatever kind it sorts into. It inherits its kind's values and overrides only the keys it
+sets. Set `glowdebug = 1` to log each glow texture's name as it is first seen. Up to 64 such sections.
+
+| Key | Meaning |
+| --- | --- |
+| `enabled` | `1`/`0`. In a kind section this is the kind's switch (`glowstreetlamps` and so on; for headlights, `remixheadlights`). |
+| `intensity` | Brightness, on top of `remixlightpower`. In a kind section this is the kind's switch (`lightlamp` and so on). In a texture section it replaces the kind's. |
+| `offset` | `X Y Z` in the object's own space, before it is placed in the world, in engine units (about a metre). X is across, Y is up, and Z runs along the object, with **+Z toward the rear** of a vehicle (vehicles drive toward -Z). An offset on a tail light stays on the lamp however the car turns. |
+| `outward` | `1` makes the X offset point away from the object's centre line, so one value moves both lamps of a pair out (positive) or in (negative). A lamp on the centre line stays put. |
+| `radius` | Size of the emitter, overriding `remixlightradius`. Changes shadow softness, not brightness. |
+| `color` | `R G B` multiplier on the light's colour. |
+
+Offsets exist because the light starts at the centre of the flare, and the flare is drawn on the lamp:
+a path-traced light there can end up inside the car body or the lamp housing, which shadows it.
