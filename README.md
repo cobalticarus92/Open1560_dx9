@@ -109,6 +109,7 @@ These act on the world-space path, so they apply to this backend only.
 | `-flatnormals` | off | Shade from facet geometry, ignoring stored vertex normals. |
 | `-nativecpucull` | off | Cull backfacing facets on the CPU. **Breaks Remix hash stability.** |
 | `-pedskin` | off | Skin pedestrians on the CPU. **Breaks Remix hash stability.** |
+| `-pedsticks` | off | Draw distant pedestrians as the original's stick figures (one screen-space ribbon per bone) instead of the full skinned mesh. **Invisible to Remix** - by default every pedestrian draws as a world-space mesh at every distance. |
 | `-reflectamount <f>` | 0.35 | Vehicle sphere-map reflection strength. |
 | `-reflectfresnelbias <f>` | 1.0 | Vehicle reflection fresnel bias. |
 | `-reflectfresnelscale <f>` | 0.0 | Vehicle reflection fresnel scale. |

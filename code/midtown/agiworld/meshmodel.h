@@ -61,7 +61,7 @@ public:
     // unchanged.
 
     // ?ModelDrawLit@agiMeshModel@@QAEHP6AXPAEPAI1PAVagiMeshSet@@@ZIPAVagiLitAnimation@@H@Z
-    ARTS_EXPORT i32 ModelDrawLit(agiMeshLighter arg1, u32 arg2, agiLitAnimation* arg3, i32 arg4);
+    i32 ModelDrawLit(agiMeshLighter arg1, u32 arg2, agiLitAnimation* arg3, i32 arg4);
 
     // ?ModelDrawSkel@agiMeshModel@@QAEHIPAVbnAnimation@@H@Z
     ARTS_IMPORT i32 ModelDrawSkel(u32 arg1, bnAnimation* arg2, i32 arg3);

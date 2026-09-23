@@ -531,7 +531,7 @@ public:
     ARTS_IMPORT mmFacadeQuad(agiMeshSet* arg1, f32 arg2, f32 arg3);
 
     // ?DrawLit@mmFacadeQuad@@QAEXP6AXPAEPAI1PAVagiMeshSet@@@Z2@Z
-    ARTS_IMPORT void DrawLit(void (*arg1)(u8*, u32*, u32*, agiMeshSet*), agiMeshSet* arg2);
+    ARTS_EXPORT void DrawLit(void (*lighter)(u8*, u32*, u32*, agiMeshSet*), agiMeshSet* mesh);
 
     // ?DoubleArea@mmFacadeQuad@@SAMPAVagiMeshSet@@@Z
     ARTS_IMPORT static f32 DoubleArea(agiMeshSet* arg1);

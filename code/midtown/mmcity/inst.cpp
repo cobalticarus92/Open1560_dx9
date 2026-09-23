@@ -20,6 +20,7 @@ define_dummy_symbol(mmcity_inst);
 
 #include "inst.h"
 
+#include "agi/pipeline.h"
 #include "agi/viewport.h"
 #include "agiworld/meshset.h"
 #include "agiworld/quality.h"
@@ -27,6 +28,8 @@ define_dummy_symbol(mmcity_inst);
 #include "heap.h"
 #include "mmcity/cullcity.h"
 #include "mmcity/renderweb.h"
+
+#include <cstring>
 
 f32 mmInstance::LodTable[3 /*Inst Type*/][4 /*Terrain Quality*/][3 /*Lod Dist*/] {
     {
@@ -254,4 +257,105 @@ void mmBuildingInstance::Draw(i32 lod)
         if (agiMeshSet* mesh = GetResidentMeshSet(std::max(lod, INST_LOD_LOW), MESH_FACADE))
             mesh->DrawLit(StaticLighter, MESH_DRAW_CLIP, nullptr);
     }
+}
+
+// agiworld/meshrend.cpp - the OPEN1560_NATIVE_MASK gate, so facades bisect with the same switch as
+// every other lit mesh. 0x2 is NATIVE_DRAWLIT: a facade quad is a DrawLit with its own corners.
+bool agiNativePathEnabled(u32 which);
+
+// ?DrawLit@mmFacadeQuad@@QAEXP6AXPAEPAI1PAVagiMeshSet@@@Z2@Z
+//
+// Building side facades: the LEFT/RIGHT/TOP/BACK panels mmFacadeInstance::Draw lays over a block.
+// This was the one lit-mesh route the world-space work never reached, because it is not
+// agiMeshSet::DrawLit - it is its own closed routine (game.asm ~183949) that ends in
+// Geometry() + FirstPass(), i.e. CPU-pretransformed screen triangles. Those carry no world
+// information, so RTX Remix never saw these faces at all: the reported "some sides of Chicago
+// buildings" missing from a capture.
+//
+// What the original does, instruction for instruction:
+//
+//   * copies the mesh's first four vertices, and clamps each vertex's Y and Z up to this quad's
+//     floors at +0x10/+0x14, when they are nonzero - a facade stretched over a lower block is cut
+//     off at the ground/back plane instead of poking through it;
+//   * builds four UVs from the packed 8.8 fixed-point pairs at +0x00 (i16 u, i16 v, times 1/256),
+//     which is how a facade tiles its texture across a panel of arbitrary size;
+//   * Geometry(1, those vertices, mesh->Planes); lighter(nullptr, shaded, mesh->Colors, mesh);
+//     FirstPass(shaded, those UVs, 0) - or FirstPass(Colors, UVs, 0xFFFFFFFF) with no lighter.
+//
+// On a device that can take world-space geometry, the same corners and UVs go to
+// agiMeshSet::DrawLit instead, which lights and submits them on the hardware path. It draws from a
+// stack copy of the mesh header with only Vertices and TexCoords repointed, rather than by
+// swapping those pointers on the mesh itself: a facade mesh is shared by every instance built from
+// the same art, and the draw path is reached on more than one thread (see the note on the
+// buffers in agiMeshSet::DrawNativeTransform), so nothing here writes to the shared object. The
+// copy is raw storage and is never destructed, because agiMeshSet's destructor frees the mesh's
+// data and this does not own it. Locking stays on the real mesh, which the copy shares a cache
+// handle with.
+//
+// Everywhere else - OpenGL, software, OPEN1560_NATIVE_MASK without 0x2 - the original routine runs
+// unchanged below.
+void mmFacadeQuad::DrawLit(void (*lighter)(u8*, u32*, u32*, agiMeshSet*), agiMeshSet* mesh)
+{
+    if (!mesh->LockIfResident())
+    {
+        mesh->PageIn();
+        return;
+    }
+
+    const i16* packed_uvs = reinterpret_cast<const i16*>(&gap0[0x00]);
+    const f32 floor_y = *reinterpret_cast<const f32*>(&gap0[0x10]);
+    const f32 floor_z = *reinterpret_cast<const f32*>(&gap0[0x14]);
+
+    Vector3 verts[4];
+    Vector2 uvs[4];
+
+    for (u32 i = 0; i < 4; ++i)
+    {
+        verts[i] = mesh->Vertices[i];
+
+        uvs[i].x = packed_uvs[(i * 2) + 0] * (1.0f / 256.0f);
+        uvs[i].y = packed_uvs[(i * 2) + 1] * (1.0f / 256.0f);
+
+        if ((floor_y != 0.0f) && (verts[i].y < floor_y))
+            verts[i].y = floor_y;
+
+        if ((floor_z != 0.0f) && (verts[i].z < floor_z))
+            verts[i].z = floor_z;
+    }
+
+    // The original reads exactly four vertices and four UVs, so a facade mesh is four corners by
+    // construction. Checked rather than assumed, because the hardware path indexes these arrays by
+    // the mesh's own counts - a larger mesh keeps the original routine and its original behaviour.
+    const bool world_path = Pipe()->SupportsNativeTransform() && agiNativePathEnabled(0x2) &&
+        (mesh->VertexCount <= 4) && (mesh->AdjunctCount <= 4);
+
+    if (world_path)
+    {
+        alignas(agiMeshSet) unsigned char storage[sizeof(agiMeshSet)];
+        std::memcpy(storage, static_cast<const void*>(mesh), sizeof(agiMeshSet));
+
+        agiMeshSet* quad = reinterpret_cast<agiMeshSet*>(storage);
+        quad->Vertices = verts;
+        quad->TexCoords = uvs;
+
+        // Flags 1, as the original passes Geometry(). DrawLit falls back to its own CPU branch on
+        // the copy for the cases it cannot light in hardware (no normals, agiConeLighter).
+        quad->DrawLit(lighter, 1, nullptr);
+    }
+    else if (mesh->Geometry(1, verts, mesh->Planes) <= 0xFF)
+    {
+        if (lighter)
+        {
+            u32 shaded[4];
+            lighter(nullptr, shaded, mesh->Colors, mesh);
+
+            mesh->FirstPass(shaded, uvs, 0);
+        }
+        else
+        {
+            mesh->FirstPass(mesh->Colors, uvs, 0xFFFFFFFF);
+        }
+    }
+
+    mesh->Unlock();
 }
