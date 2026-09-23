@@ -419,7 +419,13 @@ static void DrawMaterialFxPass(IDirect3DDevice9* device, IDirect3DTexture9* text
     // behind them. MeshWorld()'s own restore block does not cover ZWrite, so it has to happen here.
     device->SetRenderState(D3DRS_ZWRITEENABLE, agiLastState.ZWrite ? TRUE : FALSE);
 
-    agiLastState.Texture = nullptr;
+    // agiLastState.Texture is deliberately left alone. This used to null it, which made
+    // agiLastState say "nothing bound" while agiCurState still named the texture. FlushState() only
+    // looks at agiLastState when agiCurState has been touched, so the next screen draw that wanted
+    // the same state skipped the rebind, found current_texture_ null with a textured environment,
+    // and was dropped by DrawMesh()'s null-texture guard. The device's stage 0 is put back from
+    // agiLastState by RestoreStateAfterWorldDraw() at the end of the world run, through a cache the
+    // caller has invalidated, so there is nothing to force here.
 }
 
 // `view` is the engine's own view matrix, which BuildVehicleReflectionVertices needs because it
@@ -487,7 +493,7 @@ static void DrawVehicleReflectionPass(IDirect3DDevice9* device, agiWorldVtx* ver
             device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
             device->SetRenderState(D3DRS_ZWRITEENABLE, agiLastState.ZWrite ? TRUE : FALSE);
 
-            agiLastState.Texture = nullptr;
+            // agiLastState.Texture is left alone - see the note at the end of DrawMaterialFxPass().
             return;
         }
     }
@@ -1395,6 +1401,24 @@ static agiDX9NameTally g_ScreenDroppedNoTex {};
 // here - reports the busiest and then a "(+more)".
 static agiDX9NameTally g_ScreenDrawsBy {};
 
+// -d3d9attribution: the per-texture screen-draw tallies above (dropped, submitted, in-scene).
+//
+// Off by default, because they cost something on every screen draw. Each one is a linear strcmp
+// search over up to 24 names, and DrawMesh() runs up to three of them per call - for every HUD
+// element, glyph run, minimap quad and in-scene sprite - only to feed one log line every 120
+// frames. They answer specific questions (is a menu image dropped, submitted, or never asked for;
+// which surfaces are still CPU-pretransformed), so they are switched on when those questions are
+// being asked. The census totals stay unconditional; they are plain counters.
+static mem::cmd_param PARAM_d3d9_attribution {
+    "d3d9attribution", "Name screen draws by texture in the periodic DX9 census log (diagnostic)"};
+
+static bool agiDX9AttributionEnabled()
+{
+    static const bool enabled = PARAM_d3d9_attribution.get_or(false);
+
+    return enabled;
+}
+
 static void agiDX9TallyAdd(agiDX9NameTally& tally, const char* name)
 {
     if (!name || !*name)
@@ -1676,9 +1700,12 @@ void agiDX9Rasterizer::DrawMesh(u32 prim_type, agiVtx* vertices, i32 vertex_coun
     {
         // Name what was thrown away. See g_ScreenDroppedNoTex - a dropped draw is invisible to every
         // other counter in the census, so missing art used to leave no evidence anywhere.
-        agiDX9TexDef* wanted = static_cast<agiDX9TexDef*>(agiCurState.GetTexture());
+        if (agiDX9AttributionEnabled())
+        {
+            agiDX9TexDef* wanted = static_cast<agiDX9TexDef*>(agiCurState.GetTexture());
 
-        agiDX9TallyAdd(g_ScreenDroppedNoTex, wanted ? wanted->Tex.Name : nullptr);
+            agiDX9TallyAdd(g_ScreenDroppedNoTex, wanted ? wanted->Tex.Name : nullptr);
+        }
 
         return;
     }
@@ -1689,6 +1716,7 @@ void agiDX9Rasterizer::DrawMesh(u32 prim_type, agiVtx* vertices, i32 vertex_coun
     // Name what does reach the device. See g_ScreenDrawsBy - the counterpart to the dropped tally
     // above, and the only way to tell a menu image that renders black from one that was never
     // submitted at all.
+    if (agiDX9AttributionEnabled())
     {
         agiDX9TexDef* submitted = static_cast<agiDX9TexDef*>(agiCurState.GetTexture());
 
@@ -1715,9 +1743,12 @@ void agiDX9Rasterizer::DrawMesh(u32 prim_type, agiVtx* vertices, i32 vertex_coun
             // everything around them does: the tint is applied in MeshWorld, which these never
             // reach. The count alone cannot say which surfaces they are, and most of what still
             // draws is closed assembly, so a source audit cannot either. The texture name can.
-            agiDX9TexDef* screen_tex = static_cast<agiDX9TexDef*>(agiCurState.GetTexture());
+            if (agiDX9AttributionEnabled())
+            {
+                agiDX9TexDef* screen_tex = static_cast<agiDX9TexDef*>(agiCurState.GetTexture());
 
-            agiDX9TallyAdd(g_ScreenInSceneBy, screen_tex ? screen_tex->Tex.Name : nullptr);
+                agiDX9TallyAdd(g_ScreenInSceneBy, screen_tex ? screen_tex->Tex.Name : nullptr);
+            }
         }
     }
 
@@ -2377,6 +2408,16 @@ void agiDX9Rasterizer::RestoreStateAfterWorldDraw(bool remap_vertex_fog)
         ApplyBlendSet(device, agiLastState.BlendSet);
 
     agiDX9TexDef* restore_tex = static_cast<agiDX9TexDef*>(agiLastState.Texture);
+
+    // agiRendStateStruct::Reset() fills agiLastState with 0xFF bytes, and a device Reset calls it
+    // (agiDX9OnDeviceReset, and EndFrame after the -d3d9scenetarget blit). If a world run was still
+    // pending when that happened - the last draw before a lost-device recovery was a world draw -
+    // this pointer is 0xFFFFFFFF and GetHandle() below would crash on it. There is nothing
+    // meaningful to restore from a poisoned record, so bind nothing and let the next FlushState()
+    // re-issue from scratch.
+    if (reinterpret_cast<std::uintptr_t>(restore_tex) == ~static_cast<std::uintptr_t>(0))
+        restore_tex = nullptr;
+
     IDirect3DTexture9* restore_handle = restore_tex ? restore_tex->GetHandle() : nullptr;
 
     WorldSetTexture(device, 0, restore_handle);
