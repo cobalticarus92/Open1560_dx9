@@ -523,8 +523,9 @@ static void ApplyConfigOverrides()
 // filled identifies the layout exactly. Each bridge fills a fixed set of named fields (read from
 // their src/client/remix_api.cpp), and those land in a different set of slots in each layout.
 //
-// Anything else is refused rather than guessed at. A future bridge that forwards more functions will
-// land here until its layout is added below - the log line gives its filled-slot mask to do that.
+// A bridge built on the current layout that forwards MORE of it is accepted as that layout - see the
+// end of IdentifyBridge. Anything else is refused rather than guessed at, and the log line gives its
+// filled-slot mask so its layout can be added below.
 namespace
 {
     using AnyFn = void(REMIXAPI_PTR*)();
@@ -603,6 +604,16 @@ static const BridgeLayout* IdentifyBridge(const AnyFn (&slots)[kMaxSlots])
         if (layout.FilledSlots == filled)
             return &layout;
     }
+
+    // A newer build of the current layout: Remix Plus keeps adding bridge forwarding for functions its
+    // header already declares (texture creation, first seen as slots 15 and 16), which fills more of
+    // the same table without moving anything. So for the layout of the vendored header alone, every
+    // slot it fills must still be filled and anything extra is accepted. A bridge that INSERTED a
+    // function instead would shift every slot after it, which breaks this pattern and is refused.
+    const BridgeLayout& current = kBridgeLayouts[ARTS_SIZE(kBridgeLayouts) - 1];
+
+    if ((filled & current.FilledSlots) == current.FilledSlots)
+        return &current;
 
     return nullptr;
 }
@@ -714,6 +725,17 @@ void agiDX9RemixApiInit()
     agiGlowHarvestEnabled = true;
 
     Displayf("Remix API: connected through the %s", layout->Name);
+
+    u64 filled = 0;
+
+    for (u32 i = 0; i < kFilledSlotCount; ++i)
+        filled |= slots[i] ? (1ull << i) : 0ull;
+
+    if (const u64 extra = filled & ~layout->FilledSlots)
+    {
+        Displayf("Remix API: this bridge also forwards interface slots %08X%08X, which this game does not use",
+            static_cast<u32>(extra >> 32), static_cast<u32>(extra));
+    }
 
     ApplyConfigOverrides();
 }
