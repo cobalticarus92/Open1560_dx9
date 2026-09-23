@@ -71,7 +71,19 @@ struct agiGlowLight
     // Frames since this slot was last refreshed by a sprite. Drives the expiry fade; 0 means seen
     // this frame. A slot with Texture == nullptr is free.
     u32 Age;
+
+    // Identity of the light this slot holds, stable for as long as the same sprite keeps refreshing
+    // it, and never reused within a process. The slot's INDEX is not an identity:
+    // agiUpdateGlowLights compacts the array every frame, so a light's index shifts whenever one
+    // before it expires. A consumer that keeps its own per-light state across frames - the Remix
+    // API, which holds a runtime light per glow - keys it on this. 0 only in a free slot.
+    u32 Id;
 };
+
+// Whether the glow harvest runs at all. Off until a consumer needs it: the harvest, the registry's
+// per-frame ageing and each glow texture's colour grid are all pure cost with nobody reading them.
+// Set by the Remix API once it connects (agidx9/dx9remix.cpp).
+extern bool agiGlowHarvestEnabled;
 
 // How long a light survives without its sprite being redrawn, and how much of that it spends
 // fading. Long enough to ride out a culling or LOD hiccup, short enough that a light genuinely

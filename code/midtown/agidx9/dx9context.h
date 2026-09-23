@@ -161,3 +161,8 @@ inline thread_local agiDX9Context* agiDX9 {};
 // "remix"-named -d3d9dll override). Used to keep screen-space effect draws from looking like "UI"
 // to Remix's injection heuristic - see agiDX9Rasterizer::RestoreStateAfterWorldDraw.
 bool agiDX9RemixBridgeActive();
+
+// The module Direct3DCreate9 was taken from (an HMODULE, as void* so this header needs no Windows
+// headers), or null before the first device. Kept loaded for the life of the process - see
+// CreateD3D9(). The Remix API entry point is looked up on it (agidx9/dx9remix.cpp).
+void* agiDX9D3D9Module();

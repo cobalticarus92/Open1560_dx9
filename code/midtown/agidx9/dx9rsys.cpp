@@ -2488,11 +2488,7 @@ void agiDX9Rasterizer::RestoreStateAfterWorldDraw(bool remap_vertex_fog)
 // Position and extent come from the submitted geometry rather than from the instance origin,
 // because a tail light sits well off a car's centre and the whole point is that the light lands
 // where the lamp is.
-//
-// [[maybe_unused]] because its caller is gone with Pathway B and this is kept deliberately: a
-// static function with no references is C4505 at /W4, which /WX makes fatal. The attribute says
-// "unreferenced on purpose" rather than silencing the warning globally.
-[[maybe_unused]] static void HarvestWorldGlow(
+static void HarvestWorldGlow(
     agiDX9TexDef* texture, agiWorldVtx* vertices, u16* indices, i32 index_count, const Matrix34& world)
 {
     if (!texture || (index_count <= 0))
@@ -2817,16 +2813,13 @@ bool agiDX9Rasterizer::MeshWorld(agiWorldVtx* vertices, i32 vertex_count, u16* i
     // on every following world draw until something else happened to change it.
     WorldSetRenderState(device, D3DRS_ZWRITEENABLE, (!additive_glow && agiLastState.ZWrite) ? TRUE : FALSE);
 
-    // Glow harvesting is unwired along with the rest of Pathway B (see agiDX9Pipeline::BeginGfx).
-    // This was the mesh route - vehicle head, tail, brake and reverse lights, which never reach
-    // agiMeshSet::DrawCard. HarvestWorldGlow() below is intact and simply has no caller.
-    //
-    // To re-wire:
-    //     if (additive_glow && Pipe()->IsInScene())
-    //         HarvestWorldGlow(native_tex, vertices, indices, index_count, world);
+    // The mesh route of the glow harvest: vehicle head, tail, brake and reverse lights, which never
+    // reach agiMeshSet::DrawCard. Off until the Remix API connects - see agiGlowHarvestEnabled.
     //
     // IsInScene() is not incidental - it keeps menu and showroom glows, which have no city around
     // them to light, out of the set.
+    if (agiGlowHarvestEnabled && additive_glow && Pipe()->IsInScene())
+        HarvestWorldGlow(native_tex, vertices, indices, index_count, world);
 
     // Fog for this draw is decided in one place further down, once remap_vertex_fog is known - see
     // the vertex-fog remap. Additive glows want it off for the same reason as the screen path (see

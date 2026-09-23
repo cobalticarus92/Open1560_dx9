@@ -14,6 +14,10 @@ The code is not gone, only unreferenced: everything described here can be read a
 `0dac83657` and its ancestors, principally `code/midtown/agiworld/glowlight.h`,
 `code/midtown/agidx9/dx9shader.cpp` and `code/midtown/agidx9/dx9probe.cpp`.
 
+How this data now reaches the runtime - the bridge's constraints, what is built and what comes next -
+is in [remix_api_plan.md](remix_api_plan.md). The glow harvest described in §1 is live again there,
+behind `-remixapi`.
+
 A caveat on the Remix side: this document is written from the engine outward. It says what data
 exists, where to get it, and what will go wrong when you do. It does not attempt to specify exact
 `remixapi_*` struct layouts or call sequences — check those against the Remix headers you are

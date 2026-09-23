@@ -20,6 +20,7 @@
 
 #include "agi/cmodel.h"
 #include "agi/error.h"
+#include "agiworld/glowlight.h"
 #include "agiworld/texsheet.h"
 #include "pcwindis/setupdata.h"
 #include "vector7/vector2.h"
@@ -243,10 +244,15 @@ i32 agiDX9TexDef::BeginGfx()
         mip_maps = false;
     }
 
-    // BuildGlowColors(*surface) stood here, building the per-texture colour grid that
-    // SampleGlowColor() reads. Its only consumer was Pathway B's light harvest, which is unwired
-    // (agidx9/dx9pipe.cpp, BeginGfx), so this is now a per-glow-texture cost with no reader. Both
-    // functions are intact. To re-wire: restore the call under `if (alpha_glow)`.
+    // The colour grid SampleGlowColor() reads, which is where a glow light's hue comes from. Only
+    // built while the glow harvest is running (the Remix API, agidx9/dx9remix.cpp): nothing else
+    // reads it, and it walks every pixel of the texture.
+    //
+    // A texture loaded before the API connected has no grid, and its lights fall back to the
+    // harvested tint (see HasGlowColors). The API connects in the first pipeline's BeginGfx, before
+    // any city texture exists, so in practice that is only the front-end's own glows.
+    if (alpha_glow && agiGlowHarvestEnabled)
+        BuildGlowColors(*surface);
 
     bool alpha = (Tex.Flags & (agiTexParameters::Alpha | agiTexParameters::Chromakey)) != 0;
     bool needs_swizzle = false;

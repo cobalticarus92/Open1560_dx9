@@ -2510,6 +2510,12 @@ ARTS_IMPORT extern agiMeshCardInfo CurrentMeshCard;
 agiGlowLight agiGlowLights[AGI_MAX_GLOW_LIGHTS] {};
 u32 agiGlowLightCount = 0;
 
+bool agiGlowHarvestEnabled = false;
+
+// Source of agiGlowLight::Id. Process-lifetime and never reset, so an id is never handed out twice -
+// a consumer holding state for a light that has since expired can never mistake a new one for it.
+static u32 s_next_glow_light_id = 0;
+
 u32 agiGlowCardsSeen = 0;
 u32 agiGlowCardsNoTexture = 0;
 u32 agiGlowCardsNotGlow = 0;
@@ -2710,6 +2716,7 @@ void agiAddGlowLightRGB(const Vector3& position, const Vector3& tint, f32 radius
 
     f32 best_dist_sq = kMatchDistSq;
     agiGlowLight* slot = nullptr;
+    bool fresh = false;
 
     for (u32 i = 0; i < agiGlowLightCount; ++i)
     {
@@ -2730,6 +2737,10 @@ void agiAddGlowLightRGB(const Vector3& position, const Vector3& tint, f32 radius
 
     if (!slot)
     {
+        // Not a sprite already being tracked, so this is a new light - including when it takes over
+        // an evicted slot below, which held a different light a moment ago.
+        fresh = true;
+
         if (agiGlowLightCount < AGI_MAX_GLOW_LIGHTS)
         {
             slot = &agiGlowLights[agiGlowLightCount++];
@@ -2754,7 +2765,10 @@ void agiAddGlowLightRGB(const Vector3& position, const Vector3& tint, f32 radius
     // A newly allocated slot has no history and starts at rest; it gets a real velocity from its
     // second frame onwards, which is soon enough - one frame of lag on a light's first appearance
     // is not observable.
-    slot->Velocity = (slot->Texture == texture) ? (position - slot->Position) : Vector3 {0.0f, 0.0f, 0.0f};
+    //
+    // Keyed on `fresh`, not on the slot's texture matching: an evicted slot can hold a different
+    // light drawn with the same sheet, and its old position is no history of this one.
+    slot->Velocity = fresh ? Vector3 {0.0f, 0.0f, 0.0f} : (position - slot->Position);
 
     slot->Position = position;
     slot->Tint = tint;
@@ -2766,6 +2780,15 @@ void agiAddGlowLightRGB(const Vector3& position, const Vector3& tint, f32 radius
     slot->U = u;
     slot->V = v;
     slot->Age = 0;
+
+    if (fresh)
+    {
+        // 0 marks a free slot, so skip it on wrap-around.
+        if (++s_next_glow_light_id == 0)
+            ++s_next_glow_light_id;
+
+        slot->Id = s_next_glow_light_id;
+    }
 
     if (PARAM_glowdebug.get_or(false) && texture)
     {
@@ -2943,22 +2966,48 @@ void agiMeshSet::DrawCard(Vector3& position, f32 scale, u32 rotation, u32 color,
         }
     }
 
-    // The billboard glow harvest stood here - street lamps, traffic signals, lit signage - and is
-    // unwired along with the rest of Pathway B (agidx9/dx9pipe.cpp, BeginGfx). agiAddGlowLight()
-    // and agiAddGlowLightRGB() below are intact and simply have no caller.
+    // The billboard route of the glow harvest: street lamps, traffic signals, lit signage. Restored
+    // from before Pathway B was unwired, for the Remix API (agidx9/dx9remix.cpp), and off until that
+    // connects - see agiGlowHarvestEnabled.
     //
-    // Removed rather than commented out because it computed the frame's UV centroid into locals
-    // that nothing would then read, and /W4 /WX rejects that. The two things it knew that are worth
-    // knowing again before anyone rebuilds it - that `position` is in MODEL space and must be
-    // transformed by ViewParams().World, and that the UV sub-rect must come from
-    // CurrentMeshCard.Frames[4 * frame] because one texture holds red, amber and green - are
-    // written up in docs/remix_api_data_sources.md §1.2 and §1.3. Getting either wrong is not a
-    // subtle degradation: the first put the whole city's street lighting on one light at the world
-    // origin, and the second gives every traffic signal the same muddy colour in all three states.
-    //
-    // The CardsSeen / CardsNoTexture / CardsNotGlow counters above are deliberately kept. They
-    // describe the draw stream rather than Pathway B, and they answer a question nothing visual
-    // can: whether a glow reaches this point at all.
+    // The CardsSeen / CardsNoTexture / CardsNotGlow counters above run either way. They describe the
+    // draw stream rather than any consumer, and they answer a question nothing visual can: whether a
+    // glow reaches this point at all.
+    if (agiGlowHarvestEnabled && card_texture && (card_texture->Tex.Props & agiTexProp::AlphaGlow))
+    {
+        ++agiGlowCardsHarvested;
+
+        // Sample where this frame actually reads. A traffic light is one texture holding red, amber
+        // and green, selected by `frame` - see the note in agiworld/glowlight.h. Getting this wrong
+        // gives every signal the same muddy colour in all three states.
+        const Vector2* frame_uvs = &CurrentMeshCard.Frames[4 * frame];
+
+        f32 u = 0.0f;
+        f32 v = 0.0f;
+
+        for (i32 k = 0; k < 4; ++k)
+        {
+            u += frame_uvs[k].x;
+            v += frame_uvs[k].y;
+        }
+
+        // `position` is in MODEL space, not world space. See docs/remix_api_data_sources.md §1.2.
+        //
+        // DrawCard projects through view_params.ModelView, which is View * World, so whatever world
+        // matrix is current applies to this position. asParticles::Cull() sets the world to
+        // IDENTITY before its cards, so for particles, smoke and vehicle glows model space happens
+        // to be world space. mmBangerInstance::DrawGlow() does not: it sets the banger's own
+        // transform, so the position it passes is the banger-local glow offset. Taking it raw put
+        // every street lamp in the city at its mmBangerData::GlowOffset - within a couple of metres
+        // of the world origin, merged into a single light there.
+        //
+        // Transforming by ViewParams().World is right for both: it is the matrix DrawCard is already
+        // using, and it is a no-op for the identity case.
+        Vector3 world_position;
+        world_position.Dot(position, view_params.World);
+
+        agiAddGlowLight(world_position, color, scale, card_texture, u * 0.25f, v * 0.25f);
+    }
 
     f32 x = matrix.m0.x * position.x + matrix.m1.x * position.y + matrix.m2.x * position.z + matrix.m3.x;
     f32 y = matrix.m0.y * position.x + matrix.m1.y * position.y + matrix.m2.y * position.z + matrix.m3.y;

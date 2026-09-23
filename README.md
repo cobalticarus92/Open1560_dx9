@@ -130,14 +130,38 @@ These act on the world-space path, so they apply to this backend only.
 | `-d3d9nostatecache` | off | Send every render state, transform, texture binding, light and material to the device even when unchanged. Diagnostic: if the picture changes with it on, something is writing the device behind the state filter. |
 | `-d3d9attribution` | off | Name screen draws by texture in the periodic census log (dropped, submitted, in-scene). Costs a string search per screen draw, so it is off unless you are chasing a missing or CPU-pretransformed surface. |
 
+**RTX Remix API**
+
+The game's street lamps, traffic signals and vehicle lights are glow sprites that light nothing in
+the original. With `-remixapi`, each one is sent to Remix as a real light through the
+[Remix API](https://github.com/NVIDIAGameWorks/bridge-remix). This needs the RTX Remix bridge and
+`exposeRemixApi = True` in its `bridge.conf` (in the `.trex` folder next to the game's `d3d9.dll`);
+without that line the bridge refuses and the log says so. The design, what the bridge does and does
+not forward, and the phases still to come are in [docs/remix_api_plan.md](docs/remix_api_plan.md).
+
+| Switch | Default | Effect |
+| --- | --- | --- |
+| `-remixapi` | off | Connect to the Remix API and send glow lights. |
+| `-remixlightpower <f>` | 1.5 | Overall brightness of those lights. The `-light*` multipliers below scale on top of it. |
+| `-remixlightradius <f>` | 0.15 | Size of each light's emitter, in world units. Brightness does not depend on it; it sets how soft the shadows are. |
+| `-remixmaxlights <n>` | 192 | Most lights sent per frame; the brightest are kept. |
+| `-remixheadlights` | off | Also send headlight cones. Off because the cone's centre sits metres ahead of the car, so it lights the road from the wrong place. |
+| `-remixconfig <k=v\|...>` | none | Remix options (`rtx.conf` keys) applied once the API connects, separated by `\|`, e.g. `rtx.fallbackLightMode=0`. |
+| `-remixapidebug` | off | Log the first 64 lights as they are created. |
+| `-glowheadlights`, `-glowvehiclelights`, `-glowtrafficlights`, `-glowstreetlamps`, `-glowgenericlights` | on | Which kinds of glow emit light at all. |
+| `-lighthead`, `-lightvehicle`, `-lighttraffic`, `-lightlamp`, `-lightgeneric` | 0.05, 1.25, 2.0, 10.0, 1.0 | Per-kind brightness. |
+| `-glowreachscale <f>`, `-glowreachmin <f>` | 14, 20 | Convert a flare's drawn size into how far it throws. Brightness goes with the square of this. |
+| `-glowdebug` | off | Log each glow texture as it is first harvested. |
+
+A census line, `DX9 REMIXAPI`, reports live lights and how many were created, re-sent and destroyed
+every 120 frames.
+
 **Inert - the unwired programmable path**
 
 These are still registered so an existing `Open1560-Shaders.ini` does not start warning about unknown
 keys, but nothing reads them at runtime: `-d3d9quality`, `-d3d9sun`, `-d3d9reflect`, `-d3d9tonemap`,
 `-d3d9exposure`, `-d3d9heightfog`, `-d3d9flashpower`, `-d3d9glowlights`, `-d3d9glowpower`,
-`-d3d9cellsize`, `-d3d9lightspec`, `-d3d9cellpack`, `-glowheadlights`, `-glowvehiclelights`,
-`-glowtrafficlights`, `-glowstreetlamps`, `-glowgenericlights`, `-glowreachscale`, `-glowreachmin`,
-`-lighthead`, `-lightvehicle`, `-lighttraffic`, `-lightlamp`, `-lightgeneric`, `-glowdebug`.
+`-d3d9cellsize`, `-d3d9lightspec`, `-d3d9cellpack`.
 
 ### Open1560-Shaders.ini
 

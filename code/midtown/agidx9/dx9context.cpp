@@ -50,10 +50,16 @@ static mem::cmd_param PARAM_d3d9_dll {"d3d9dll", "DLL to take Direct3DCreate9 fr
 using PFN_Direct3DCreate9 = IDirect3D9*(WINAPI*) (UINT sdk_version);
 
 static bool g_remix_bridge_active = false;
+static HMODULE g_d3d9_module = nullptr;
 
 bool agiDX9RemixBridgeActive()
 {
     return g_remix_bridge_active;
+}
+
+void* agiDX9D3D9Module()
+{
+    return g_d3d9_module;
 }
 
 // Whether the module a name resolved to looks like an RTX Remix runtime.
@@ -152,6 +158,7 @@ static IDirect3D9* CreateD3D9()
                 char path[MAX_PATH];
 
                 g_remix_bridge_active = IsRemixBridgeModule(module, name, path, sizeof(path));
+                g_d3d9_module = module;
 
                 Displayf("D3D9: Direct3DCreate9 from '%s' -> '%s'%s", name, (path[0] != '\0') ? path : "<unknown>",
                     g_remix_bridge_active ? " [RTX Remix runtime detected]" : "");
