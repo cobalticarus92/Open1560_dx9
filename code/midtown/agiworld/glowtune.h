@@ -65,6 +65,15 @@ struct agiGlowTuning
     // Multiplies the resolved colour, per channel. For correcting a hue the glow sheet gets wrong.
     bool HasColor {};
     Vector3 Color {1.0f, 1.0f, 1.0f};
+
+    // Aimed lights (headlights) only. The beam's half-angle in degrees, replacing the one measured off
+    // the beam mesh, and how soft its edge is, 0 (hard) to 1. Ignored for a light that shines every
+    // way.
+    bool HasCone {};
+    f32 Cone {};
+
+    bool HasSoftness {};
+    f32 Softness {};
 };
 
 // Tuning for a glow kind. Written only by the config loader, before the game starts.

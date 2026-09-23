@@ -79,10 +79,15 @@ static mem::cmd_param PARAM_remix_lightradius {"remixlightradius", "Radius of a 
 
 static mem::cmd_param PARAM_remix_maxlights {"remixmaxlights", "Most Remix API glow lights sent per frame"};
 
-// Off by default for the reason agiClassifyGlowIntensity gives for lighthead: the cone is a large
-// mesh whose centre sits metres ahead of the bonnet, so as a point light it lights the road from the
-// wrong place. A proper headlight is a shaped light off the car's own matrix - see the plan, phase 3.
-static mem::cmd_param PARAM_remix_headlights {"remixheadlights", "Send headlight cones as Remix API lights"};
+// Headlights are spot lights: put at the lamp and aimed down the beam the game draws (see
+// HarvestHeadlightBeam, dx9rsys.cpp), and sent with Remix light shaping. On by default now that they
+// light the road from the right place; they used to be off because a headlight was a point light at
+// the centre of its beam mesh, metres down the road.
+static mem::cmd_param PARAM_remix_headlights {"remixheadlights", "Send headlights as Remix API spot lights"};
+
+// Default edge softness of a headlight beam, 0 (hard) to 1. The half-angle is measured off the beam
+// mesh; both can be set per kind or texture in Open1560_RemixAPI.ini (cone, softness).
+static mem::cmd_param PARAM_remix_beamsoftness {"remixbeamsoftness", "Edge softness of Remix API headlight beams"};
 
 // rtx.conf overrides applied once the API connects, as key=value pairs separated by '|'. Lets the
 // game's own ini carry Remix settings that belong to this game, e.g. rtx.fallbackLightMode=0 now
@@ -128,6 +133,19 @@ namespace
     constexpr f32 kMoveEpsilonSq = 0.02f * 0.02f;
     constexpr f32 kRadianceEpsilon = 0.03f;
 
+    // An aimed light is re-sent when its beam swings by more than about 1.5 degrees: well under what
+    // shows at the far end of a beam, and above the frame-to-frame jitter of a car at rest.
+    constexpr f32 kAimEpsilonCos = 0.99966f;
+
+    // Light shaping for an aimed light. Aimed = false is a light that shines every way.
+    struct Shaping
+    {
+        bool Aimed;
+        Vector3 Direction;
+        f32 Cone;
+        f32 Softness;
+    };
+
     struct RemixLight
     {
         u32 GlowId; // 0 = free slot
@@ -136,6 +154,7 @@ namespace
         Vector3 Position;
         Vector3 Radiance;
         f32 Radius;
+        Shaping Shape;
         u32 SeenFrame;
     };
 
@@ -145,6 +164,7 @@ namespace
         Vector3 Position;
         Vector3 Radiance;
         f32 Radius;
+        Shaping Shape;
         f32 Power;
         bool Dynamic;
         i32 Slot;
@@ -290,7 +310,7 @@ static bool ResolveGlow(const agiGlowLight& glow, f32 radius, Candidate& out)
     if (!agiGlowKindEnabled(kind))
         return false;
 
-    if ((kind == agiGlowKind::Headlight) && !PARAM_remix_headlights.get_or(false))
+    if ((kind == agiGlowKind::Headlight) && !PARAM_remix_headlights.get_or(true))
         return false;
 
     // Hand tuning from Open1560_RemixAPI.ini (agiworld/glowtune.h), resolved against the kind as it
@@ -336,6 +356,21 @@ static bool ResolveGlow(const agiGlowLight& glow, f32 radius, Candidate& out)
     out.Radiance = {std::max(radiance.x, 0.0f), std::max(radiance.y, 0.0f), std::max(radiance.z, 0.0f)};
     out.Radius = light_radius;
     out.Power = power;
+    out.Shape = {};
+
+    // An aimed light. Remix keeps the radiance of a shaped light as it is and only masks it outside
+    // the cone, so the brightness down the beam is exactly what it would be unshaped: the gain above
+    // holds for headlights too, with the whole of it pointed down the road.
+    if (glow.Direction.Mag2() > 0.5f)
+    {
+        const f32 cone = tuning.HasCone ? tuning.Cone : glow.ConeAngle;
+        const f32 softness = tuning.HasSoftness ? tuning.Softness : PARAM_remix_beamsoftness.get_or(0.3f);
+
+        out.Shape.Aimed = true;
+        out.Shape.Direction = glow.Direction * (1.0f / std::sqrt(glow.Direction.Mag2()));
+        out.Shape.Cone = std::clamp(cone, 1.0f, 179.0f);
+        out.Shape.Softness = std::clamp(softness, 0.0f, 1.0f);
+    }
 
     // Vehicle lamps are dynamic even when the car is parked: it can pull away at any moment. Anything
     // else is dynamic only while it is actually moving. Remix Plus uses this to decide whether a light
@@ -361,6 +396,17 @@ static bool CreateLight(const Candidate& candidate, u16 generation, remixapi_Lig
     sphere.radius = radius;
     sphere.shaping_hasvalue = 0;
     sphere.shaping_value = {};
+
+    if (candidate.Shape.Aimed)
+    {
+        const Vector3& direction = candidate.Shape.Direction;
+
+        sphere.shaping_hasvalue = 1;
+        sphere.shaping_value.direction = {direction.x, direction.y, direction.z};
+        sphere.shaping_value.coneAngleDegrees = candidate.Shape.Cone;
+        sphere.shaping_value.coneSoftness = candidate.Shape.Softness;
+        sphere.shaping_value.focusExponent = 0.0f;
+    }
 
     // The Remix Plus bridge forwards this; NVIDIA's bridge stops at shaping_value, so there the
     // runtime sees 0 and these lights take no part in volumetrics.
@@ -394,6 +440,14 @@ static bool CreateLight(const Candidate& candidate, u16 generation, remixapi_Lig
         Displayf("REMIXAPI: light %08X gen=%u pos=(%.1f %.1f %.1f) radiance=(%.1f %.1f %.1f) r=%.2f%s",
             candidate.GlowId, static_cast<u32>(generation), position.x, position.y, position.z, radiance.x, radiance.y,
             radiance.z, radius, candidate.Dynamic ? " dynamic" : "");
+
+        if (candidate.Shape.Aimed)
+        {
+            const Vector3& direction = candidate.Shape.Direction;
+
+            Displayf("REMIXAPI:   aimed (%.2f %.2f %.2f) cone=%.1f softness=%.2f", direction.x, direction.y,
+                direction.z, candidate.Shape.Cone, candidate.Shape.Softness);
+        }
     }
 
     return true;
@@ -757,7 +811,14 @@ void agiDX9RemixApiSubmitFrame()
             const bool recoloured = radiance_change > (old_power * kRadianceEpsilon);
             const bool resized = light.Radius != candidate.Radius;
 
-            if (!moved && !recoloured && !resized)
+            const Shaping& old_shape = light.Shape;
+            const Shaping& new_shape = candidate.Shape;
+            const bool reshaped = (old_shape.Aimed != new_shape.Aimed) ||
+                (new_shape.Aimed &&
+                    (((old_shape.Direction ^ new_shape.Direction) < kAimEpsilonCos) ||
+                        (old_shape.Cone != new_shape.Cone) || (old_shape.Softness != new_shape.Softness)));
+
+            if (!moved && !recoloured && !resized && !reshaped)
                 continue;
 
             // Retire the old light and create its successor under the next generation's hash - see
@@ -779,6 +840,7 @@ void agiDX9RemixApiSubmitFrame()
             light.Position = candidate.Position;
             light.Radiance = candidate.Radiance;
             light.Radius = candidate.Radius;
+            light.Shape = candidate.Shape;
             ++s_stats.Updated;
 
             continue;
@@ -802,6 +864,7 @@ void agiDX9RemixApiSubmitFrame()
         light.Position = candidate.Position;
         light.Radiance = candidate.Radiance;
         light.Radius = candidate.Radius;
+        light.Shape = candidate.Shape;
         light.SeenFrame = s_frame;
 
         ++s_live;

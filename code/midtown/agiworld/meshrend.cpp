@@ -2636,11 +2636,14 @@ f32 agiClassifyGlowIntensity(const char* name, const Vector3& color)
     if (!name)
         return 1.0f;
 
-    // Headlight cones. Drastically reduced: the cone is a big mesh whose centroid sits metres ahead
-    // of the bonnet, so as a point light it washes the road from the wrong place and pops with the
-    // LOD that draws it. The sprite still renders - only its contribution as a light is pulled back.
+    // Headlight cones. These used to be pulled back to 0.05, because the light sat at the centroid of
+    // the cone mesh - metres ahead of the bonnet - and washed the road from the wrong place. The
+    // harvest now puts it at the lamp and aims it down the beam (HarvestHeadlightBeam, dx9rsys.cpp),
+    // and its reach is the beam's full length. That reach is large - the cone is tens of units long -
+    // and brightness goes with its square, so a modest multiplier already makes a beam that lights the
+    // road ten units ahead about as strongly as a street lamp lights the pavement under it.
     if (std::strstr(name, "CONE"))
-        return PARAM_light_head.get_or(0.05f);
+        return PARAM_light_head.get_or(2.0f);
 
     // Name first where the name is decisive. FXLTGLOWRED/AMBER are vehicle lamp sheets whatever
     // colour the instance tints them, so they never need the saturation test at all.
@@ -2685,7 +2688,8 @@ f32 agiGlowLightReach(f32 flare_half_extent)
     return std::max(flare_half_extent * PARAM_glow_reach_scale.get_or(14.0f), PARAM_glow_reach_min.get_or(20.0f));
 }
 
-void agiAddGlowLightRGB(const Vector3& position, const Vector3& tint, f32 radius, agiTexDef* texture, f32 u, f32 v)
+void agiAddGlowLightRGB(const Vector3& position, const Vector3& tint, f32 radius, agiTexDef* texture, f32 u, f32 v,
+    const Vector3& direction, f32 cone_angle)
 {
     if ((tint.x <= 0.0f) && (tint.y <= 0.0f) && (tint.z <= 0.0f))
         return;
@@ -2781,6 +2785,8 @@ void agiAddGlowLightRGB(const Vector3& position, const Vector3& tint, f32 radius
     slot->U = u;
     slot->V = v;
     slot->Age = 0;
+    slot->Direction = direction;
+    slot->ConeAngle = cone_angle;
 
     if (fresh)
     {

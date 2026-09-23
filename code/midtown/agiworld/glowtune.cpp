@@ -139,6 +139,18 @@ agiGlowTuning agiResolveGlowTuning(const char* texture_name, agiGlowKind kind)
         result.Color = texture->Color;
     }
 
+    if (texture->HasCone)
+    {
+        result.HasCone = true;
+        result.Cone = texture->Cone;
+    }
+
+    if (texture->HasSoftness)
+    {
+        result.HasSoftness = true;
+        result.Softness = texture->Softness;
+    }
+
     return result;
 }
 

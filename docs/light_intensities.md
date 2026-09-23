@@ -74,7 +74,7 @@ linearly.
 
 | # | test | parameter | default | user ini |
 |---|---|---|---|---|
-| 1 | texture name contains `CONE` | `lighthead` | 0.05 | 0.05 |
+| 1 | texture name contains `CONE` | `lighthead` | 2.0 (was 0.05 while headlights were point lights at the cone's centre) | — |
 | 2 | name contains `FXLTGLOWRED` / `FXLTGLOWAMBER` | `lightvehicle` | 1.25 | 1.25 |
 | 3 | peak channel <= 1e-4 (black) | `lightlamp` | 10.0 | — |
 | 4 | relative saturation `(peak-floor)/peak > 0.65` | `lighttraffic` | 2.0 | 2.0 |

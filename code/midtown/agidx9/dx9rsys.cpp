@@ -46,6 +46,7 @@
 #include "dx9_windows.h"
 
 #include <algorithm>
+#include <cfloat>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -2480,6 +2481,197 @@ void agiDX9Rasterizer::RestoreStateAfterWorldDraw(bool remap_vertex_fog)
         WorldSetTransform(device, D3DTS_PROJECTION, identity);
 }
 
+// Harvests a headlight beam - the FXLTCONE mesh - as one aimed light per lamp. False if the mesh is
+// not shaped like a beam, in which case the caller treats it as an ordinary glow.
+//
+// The beam is the one glow whose centre means nothing. It is a long, widening cone laid out ahead of
+// the car (its drawn radius is around 39 units), so a light at its centre - which is where the
+// general route below puts every glow - sits far down the road, lighting it from above and from the
+// wrong place, and has no direction at all. What the mesh does carry is everything a real headlight
+// needs, just not at its centre:
+//
+//   - the lamp end: the NARROW end of the cone. That is where the light starts.
+//   - the aim: from the centre of the lamp end to the centre of the far end, which picks up any
+//     downward tilt the artist gave the beam as well as which way the car faces. Measured over the
+//     whole mesh and shared by both lamps of a pair: the two beams widen into each other, so any
+//     split of the far end between them skews each half outward.
+//   - the spread: the far end's half-height over the beam's length is its half-angle. Height, not
+//     width, for the same reason - across, a pair of beams overlap; vertically each is whole.
+//   - the reach: the beam's length.
+//
+// Measured along local Z, which is the length of every vehicle model (they drive toward -Z). Which
+// end is narrow is measured too, rather than assumed. And the beam is split into its lamps by the gap
+// between them at the lamp end, where the two cones are well apart even though they widen into each
+// other further out - so a car gets two lights and a motorbike, whose single beam has no such gap,
+// gets one.
+static bool HarvestHeadlightBeam(
+    agiDX9TexDef* texture, agiWorldVtx* vertices, u16* indices, i32 index_count, const Matrix34& world)
+{
+    Vector3 bound_min = vertices[indices[0]].pos;
+    Vector3 bound_max = bound_min;
+
+    f32 accum_r = 0.0f, accum_g = 0.0f, accum_b = 0.0f, accum_a = 0.0f;
+    f32 accum_u = 0.0f, accum_v = 0.0f;
+
+    for (i32 i = 0; i < index_count; ++i)
+    {
+        const agiWorldVtx& vtx = vertices[indices[i]];
+        const Vector3& p = vtx.pos;
+
+        bound_min = {std::min(bound_min.x, p.x), std::min(bound_min.y, p.y), std::min(bound_min.z, p.z)};
+        bound_max = {std::max(bound_max.x, p.x), std::max(bound_max.y, p.y), std::max(bound_max.z, p.z)};
+
+        accum_r += static_cast<f32>((vtx.color >> 16) & 0xFF);
+        accum_g += static_cast<f32>((vtx.color >> 8) & 0xFF);
+        accum_b += static_cast<f32>(vtx.color & 0xFF);
+        accum_a += static_cast<f32>((vtx.color >> 24) & 0xFF);
+        accum_u += vtx.tu;
+        accum_v += vtx.tv;
+    }
+
+    const f32 length = bound_max.z - bound_min.z;
+    const f32 across = std::max(bound_max.x - bound_min.x, bound_max.y - bound_min.y);
+
+    // Not a beam: too short, or not clearly longer than it is wide.
+    if ((length < 1.0f) || (length < across))
+        return false;
+
+    // The end slabs. Thin, because the beams widen fast: a fifth of a 40-unit beam in, the two cones
+    // of a pair have already grown into each other and the gap that tells the lamps apart is gone.
+    const f32 slab = std::max(length * 0.05f, 0.05f);
+
+    struct Extent
+    {
+        Vector3 Min {FLT_MAX, FLT_MAX, FLT_MAX};
+        Vector3 Max {-FLT_MAX, -FLT_MAX, -FLT_MAX};
+
+        void Add(const Vector3& p)
+        {
+            Min = {std::min(Min.x, p.x), std::min(Min.y, p.y), std::min(Min.z, p.z)};
+            Max = {std::max(Max.x, p.x), std::max(Max.y, p.y), std::max(Max.z, p.z)};
+        }
+
+        bool Empty() const
+        {
+            return Min.x > Max.x;
+        }
+
+        Vector3 Centre() const
+        {
+            return (Min + Max) * 0.5f;
+        }
+
+        f32 Width() const
+        {
+            return std::max(Max.x - Min.x, Max.y - Min.y);
+        }
+    };
+
+    Extent rear_end;
+    Extent front_end;
+
+    for (i32 i = 0; i < index_count; ++i)
+    {
+        const Vector3& p = vertices[indices[i]].pos;
+
+        if (p.z >= (bound_max.z - slab))
+            rear_end.Add(p);
+
+        if (p.z <= (bound_min.z + slab))
+            front_end.Add(p);
+    }
+
+    // Ties go to the rear as the lamp end: vehicles face -Z, so a beam starts at its +Z end.
+    const bool lamp_at_rear = rear_end.Width() <= front_end.Width();
+    const Extent& lamp_end = lamp_at_rear ? rear_end : front_end;
+    const f32 lamp_z = lamp_at_rear ? bound_max.z : bound_min.z;
+
+    auto at_lamp_end = [&](const Vector3& p) {
+        return lamp_at_rear ? (p.z >= (bound_max.z - slab)) : (p.z <= (bound_min.z + slab));
+    };
+
+    const Extent& far_end = lamp_at_rear ? front_end : rear_end;
+
+    Vector3 lamp_centre = lamp_end.Centre();
+    lamp_centre.z = lamp_z;
+
+    const Vector3 local_axis = far_end.Centre() - lamp_centre;
+    const f32 axis_length = std::sqrt(local_axis ^ local_axis);
+
+    if (!(axis_length > 0.5f))
+        return false;
+
+    const f32 far_half = std::max(far_end.Max.y - far_end.Min.y, 0.05f * axis_length) * 0.5f;
+    const f32 cone = std::clamp(std::atan(far_half / axis_length) * (180.0f / 3.14159265f), 8.0f, 60.0f);
+
+    Vector3 world_axis;
+    world_axis.Dot3x3(local_axis, world);
+
+    const f32 world_length = std::sqrt(world_axis ^ world_axis);
+
+    if (!(world_length > 1e-4f))
+        return false;
+
+    const Vector3 world_direction = world_axis * (1.0f / world_length);
+
+    // Split into lamps at the lamp end's centre line, and keep the split only if there is a real gap
+    // between the halves - wider than either half is. A single centred beam has none.
+    const f32 split_x = lamp_end.Centre().x;
+
+    Extent lamp_halves[2];
+
+    for (i32 i = 0; i < index_count; ++i)
+    {
+        const Vector3& p = vertices[indices[i]].pos;
+
+        if (at_lamp_end(p))
+            lamp_halves[(p.x < split_x) ? 0 : 1].Add(p);
+    }
+
+    bool two_lamps = !lamp_halves[0].Empty() && !lamp_halves[1].Empty();
+
+    if (two_lamps)
+    {
+        const f32 gap = lamp_halves[1].Min.x - lamp_halves[0].Max.x;
+        const f32 half_width =
+            std::max(lamp_halves[0].Max.x - lamp_halves[0].Min.x, lamp_halves[1].Max.x - lamp_halves[1].Min.x);
+
+        two_lamps = gap > std::max(half_width, 0.1f);
+    }
+
+    const i32 lamp_count = two_lamps ? 2 : 1;
+
+    const f32 inv_verts = 1.0f / static_cast<f32>(index_count);
+    const f32 intensity = std::max((accum_a * inv_verts) / 255.0f, 1.0f / 255.0f);
+
+    const Vector3 tint {
+        (accum_r * inv_verts / 255.0f) * intensity,
+        (accum_g * inv_verts / 255.0f) * intensity,
+        (accum_b * inv_verts / 255.0f) * intensity,
+    };
+
+    const agiGlowTuning tuning = agiResolveGlowTuning(texture->Tex.Name, agiGlowKind::Headlight);
+
+    if (tuning.HasEnabled && !tuning.Enabled)
+        return true;
+
+    for (i32 lamp = 0; lamp < lamp_count; ++lamp)
+    {
+        // With one lamp, the whole lamp end is its own.
+        Vector3 local_lamp = two_lamps ? lamp_halves[lamp].Centre() : lamp_end.Centre();
+        local_lamp.z = lamp_z;
+        local_lamp = local_lamp + agiGlowLocalOffset(tuning, local_lamp);
+
+        Vector3 world_lamp;
+        world_lamp.Dot(local_lamp, world);
+
+        agiAddGlowLightRGB(
+            world_lamp, tint, world_length, texture, accum_u * inv_verts, accum_v * inv_verts, world_direction, cone);
+    }
+
+    return true;
+}
+
 // Harvests a world-space glow mesh as a light source. See agiworld/glowlight.h.
 //
 // The billboard path (agiMeshSet::DrawCard) misses everything vehicle-related: mmCarModel::DrawGlow
@@ -2493,6 +2685,12 @@ static void HarvestWorldGlow(
     agiDX9TexDef* texture, agiWorldVtx* vertices, u16* indices, i32 index_count, const Matrix34& world)
 {
     if (!texture || (index_count <= 0))
+        return;
+
+    // Headlight beams are aimed lights, placed and pointed from the beam's shape rather than its
+    // centre - see HarvestHeadlightBeam.
+    if ((agiClassifyGlowKind(texture->Tex.Name, Vector3 {1.0f, 1.0f, 1.0f}) == agiGlowKind::Headlight) &&
+        HarvestHeadlightBeam(texture, vertices, indices, index_count, world))
         return;
 
     // One light PER FLARE, not one per glow mesh.

@@ -229,11 +229,38 @@ The position is the last harvested one, never extrapolated. Submission runs afte
 frame's draws, so a light still being drawn is current. Pushing a fading light along its old
 velocity is what made lights fly off across the city in the programmable path.
 
-### 4.4 Headlights are off by default
+### 4.4 Headlights are spot lights (phase 3, done)
 
-`FXLTCONE`, the headlight cone, is a large mesh whose centre sits metres ahead of the bonnet. As a
-point light it lights the road from the wrong place. `-remixheadlights` sends it anyway, for
-comparison. Phase 3 is the real fix.
+`FXLTCONE`, the headlight beam, is a large mesh whose centre sits metres ahead of the bonnet, so it
+is not harvested like other glows. `HarvestHeadlightBeam` (`dx9rsys.cpp`) measures it instead, in
+the car's own space:
+
+- **Lamp end.** The narrow end of the cone, measured rather than assumed. Ties go to +Z, the rear,
+  because vehicles face -Z.
+- **Lamps.** The lamp end is split at its centre line, and the split is kept only when a real gap
+  separates the halves. A car gets two lights. A motorbike's single beam has no gap, so it gets one.
+- **Aim.** From the centre of the lamp end to the centre of the far end, over the whole mesh, shared
+  by both lamps. This picks up the beam's downward tilt. The two beams of a pair widen into each
+  other, so splitting the far end between them skews each half outward, about 7 degrees on a
+  typical car.
+- **Spread.** The half-angle is the far end's half-height over the beam's length, clamped to 8-60
+  degrees. Height, not width, for the same reason.
+- **Reach.** The beam's length.
+
+Each lamp goes into the registry with a world-space direction and cone angle
+(`agiGlowLight::Direction`, `ConeAngle`). `ResolveGlow` sends it as a sphere light with
+`shaping_hasvalue = 1`. `[Glow.Headlights]` `cone` and `softness` override the measured angle and
+`-remixbeamsoftness`. A change in aim of more than about 1.5 degrees re-sends the light. Remix only
+masks a shaped light outside its cone, so the brightness down the beam follows the same gain formula
+as every other light. With the beam's full length as reach, `lighthead` 2.0 lights the road about
+as strongly as a street lamp lights its pavement.
+
+Headlights are on only at night and in poor weather, which the engine already decides by drawing the
+beam or not, and the registry's TTL handles the switch. A mesh that is not beam-shaped (shorter
+than it is wide) falls back to the ordinary route.
+
+The old headlight scale, `lighthead` 0.05, is not carried over from `Open1560-Shaders.ini`. Under
+the new model it would leave headlights all but dark.
 
 ---
 
@@ -249,11 +276,12 @@ delete the file to regenerate it.
 | `remixlightpower` | 1.5 | Overall brightness |
 | `remixlightradius` | 0.15 | Emitter size (shadow softness only) |
 | `remixmaxlights` | 192 | Per-frame budget |
-| `remixheadlights` | 0 | Send headlight cones |
+| `remixheadlights` | 1 | Send headlights as spot lights |
+| `remixbeamsoftness` | 0.3 | Headlight beam edge softness |
 | `remixconfig` | - | `rtx.conf` keys, `key=value\|key=value` |
 | `remixapidebug` | 0 | Log light creation |
 | `glowstreetlamps`, `glowtrafficlights`, `glowvehiclelights`, `glowgenericlights`, `glowheadlights` | 1 | Which kinds emit |
-| `lightlamp`, `lighttraffic`, `lightvehicle`, `lightgeneric`, `lighthead` | 10, 2, 1.25, 1, 0.05 | Per-kind brightness |
+| `lightlamp`, `lighttraffic`, `lightvehicle`, `lightgeneric`, `lighthead` | 10, 2, 1.25, 1, 2 | Per-kind brightness |
 | `glowreachscale`, `glowreachmin` | 14, 20 | Flare size to reach; brightness goes with its square |
 
 `remixconfig` is `|`-separated because the ini loader treats `;` as a comment, and `rtx.conf`
@@ -300,16 +328,8 @@ fallback light is still switching on in scenes that now have lights of their own
 
 ### Phase 3 - headlights as spot lights
 
-The cone mesh is the wrong data. What a headlight needs is the lamp position and the car's facing.
-Both are available in `HarvestWorldGlow`, which receives the draw's `world` matrix:
-
-- Harvest `FXLTCONE` separately: take the car's forward axis from `world` (the sign needs checking
-  against a known heading), and put the light at the near end of the cone, where it meets the car,
-  not at its centroid.
-- Extend `agiGlowLight` with an optional direction, and send a sphere light with
-  `shaping_hasvalue = 1`: direction, `coneAngleDegrees` about 30-40, some `coneSoftness`.
-- Headlights are on only at night and in poor weather, which the engine already decides by drawing
-  the cone or not. The registry's TTL handles the switch.
+Done; see section 4.4. The cone angle comes from the beam mesh rather than a fixed 30-40 degrees, and
+the aim comes from the mesh's own axis, not an assumed sign on the car's matrix.
 
 ### Phase 4 - the engine's dynamic lights
 

@@ -147,11 +147,12 @@ does and does not forward to a 32-bit game, and the phases still to come are in
 | `-remixlightpower <f>` | 1.5 | Overall brightness of those lights. The `-light*` multipliers below scale on top of it. |
 | `-remixlightradius <f>` | 0.15 | Size of each light's emitter, in world units. Brightness does not depend on it; it sets how soft the shadows are. |
 | `-remixmaxlights <n>` | 192 | Most lights sent per frame; the brightest are kept. |
-| `-remixheadlights` | off | Also send headlight cones. Off because the cone's centre sits metres ahead of the car, so it lights the road from the wrong place. |
+| `-remixheadlights` | on | Send headlights as spot lights: one per lamp, placed at the lamp and aimed down the beam the game draws. |
+| `-remixbeamsoftness <f>` | 0.3 | How gradual a headlight beam's edge is, 0 (hard) to 1. |
 | `-remixconfig <k=v\|...>` | none | Remix options (`rtx.conf` keys) applied once the API connects, separated by `\|`, e.g. `rtx.fallbackLightMode=0`. |
 | `-remixapidebug` | off | Log the first 64 lights as they are created. |
 | `-glowheadlights`, `-glowvehiclelights`, `-glowtrafficlights`, `-glowstreetlamps`, `-glowgenericlights` | on | Which kinds of glow emit light at all. |
-| `-lighthead`, `-lightvehicle`, `-lighttraffic`, `-lightlamp`, `-lightgeneric` | 0.05, 1.25, 2.0, 10.0, 1.0 | Per-kind brightness. |
+| `-lighthead`, `-lightvehicle`, `-lighttraffic`, `-lightlamp`, `-lightgeneric` | 2.0, 1.25, 2.0, 10.0, 1.0 | Per-kind brightness. |
 | `-glowreachscale <f>`, `-glowreachmin <f>` | 14, 20 | Convert a flare's drawn size into how far it throws. Brightness goes with the square of this. |
 | `-glowdebug` | off | Log each glow texture as it is first harvested. |
 
@@ -202,7 +203,7 @@ light of that kind:
 | `[Glow.StreetLamps]` | Warm, unsaturated glows: street lamps and other static lighting |
 | `[Glow.TrafficSignals]` | Pure-hue glows: traffic signals |
 | `[Glow.VehicleLamps]` | Tail and brake lamps (`FXLTGLOWRED`, `FXLTGLOWAMBER`) |
-| `[Glow.Headlights]` | The headlight cone (`FXLTCONE`), off by default |
+| `[Glow.Headlights]` | Headlights, as spot lights measured off the beam mesh (`FXLTCONE`) |
 | `[Glow.OtherGlows]` | Neutral whites: reverse lamps, coronas |
 
 A `[Glow:<TEXTURE>]` section, such as `[Glow:FXLTGLOWRED]`, targets every flare drawn with one glow
@@ -217,6 +218,8 @@ sets. Set `glowdebug = 1` to log each glow texture's name as it is first seen. U
 | `outward` | `1` makes the X offset point away from the object's centre line, so one value moves both lamps of a pair out (positive) or in (negative). A lamp on the centre line stays put. |
 | `radius` | Size of the emitter, overriding `remixlightradius`. Changes shadow softness, not brightness. |
 | `color` | `R G B` multiplier on the light's colour. |
+| `cone` | Headlights only: the beam's half-angle in degrees. Unset, it is measured off the beam mesh. |
+| `softness` | Headlights only: how gradual the beam's edge is, `0` (hard) to `1`. |
 
 Offsets exist because the light starts at the centre of the flare, and the flare is drawn on the lamp:
 a path-traced light there can end up inside the car body or the lamp housing, which shadows it.

@@ -78,6 +78,13 @@ struct agiGlowLight
     // before it expires. A consumer that keeps its own per-light state across frames - the Remix
     // API, which holds a runtime light per glow - keys it on this. 0 only in a free slot.
     u32 Id;
+
+    // World-space unit vector the light is aimed along, or zero for a light that shines every way.
+    // Only headlights have one: the harvest recovers it from the beam mesh the game draws (see
+    // HarvestHeadlightBeam in agidx9/dx9rsys.cpp). ConeAngle is the beam's half-angle in degrees,
+    // measured off the same mesh, and means nothing when Direction is zero.
+    Vector3 Direction;
+    f32 ConeAngle;
 };
 
 // Whether the glow harvest runs at all. Off until a consumer needs it: the harvest, the registry's
@@ -223,7 +230,11 @@ void agiAddGlowLight(const Vector3& position, u32 color, f32 scale, agiTexDef* t
 // in the sheet data). That is the engine's own answer to "what colour is this light", which is why
 // a red tail light, an amber indicator and a green traffic light come out right without anything
 // being hard-coded here.
-void agiAddGlowLightRGB(const Vector3& position, const Vector3& tint, f32 radius, agiTexDef* texture, f32 u, f32 v);
+//
+// `direction` and `cone_angle` make it an aimed light - see agiGlowLight::Direction. Zero, the
+// default, is a light that shines every way, which is every glow but a headlight.
+void agiAddGlowLightRGB(const Vector3& position, const Vector3& tint, f32 radius, agiTexDef* texture, f32 u, f32 v,
+    const Vector3& direction = Vector3 {0.0f, 0.0f, 0.0f}, f32 cone_angle = 0.0f);
 
 // Ages the live set and retires lights whose sprite has not been seen for a while.
 // Called once per frame by the pipeline (agidx9/dx9pipe.cpp, BeginFrame).

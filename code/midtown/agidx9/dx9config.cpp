@@ -92,6 +92,8 @@ static constexpr const char* kConfigTemplate =
     ";              moves both lamps of a pair out (or, negative, in) together. 0: always toward +X.\n"
     ";   radius     this kind's emitter size, overriding remixlightradius.\n"
     ";   color      R G B multiplier on the light's colour, e.g. 1 0.9 0.8 to warm it.\n"
+    ";   cone       headlights only: the beam's half-angle in degrees. Unset: measured off the beam.\n"
+    ";   softness   headlights only: how gradual the beam's edge is, 0 (hard) to 1.\n"
     ";\n"
     "; Why offsets. The light starts at the centre of the flare, and the flare is drawn ON the lamp:\n"
     "; a tail light's glow sits on the lens, a street lamp's round the bulb. A path-traced light there\n"
@@ -123,13 +125,17 @@ static constexpr const char* kConfigTemplate =
     "outward = 1\n"
     "\n"
     "[Glow.Headlights]\n"
-    "; The headlight cone (FXLTCONE). Off by default: the cone is a large mesh whose centre sits metres\n"
-    "; ahead of the car, so without an offset it lights the road from the wrong place. The cone lies\n"
-    "; toward -Z (the front), so a positive Z offset brings it back toward the lamps.\n"
-    "enabled = 0\n"
-    "intensity = 0.05\n"
+    "; Headlights, as spot lights aimed down the beam. The game draws each beam as a cone mesh\n"
+    "; (FXLTCONE); the light is put at the lamp end of it and aimed along it, one per lamp, and the\n"
+    "; beam's length is its reach. offset moves the lamp end (-Z is forward, so a small negative Z\n"
+    "; brings the light out of the headlight housing). cone is the beam's half-angle in degrees,\n"
+    "; measured off the mesh when unset; softness is how gradual its edge is, 0 to 1.\n"
+    "enabled = 1\n"
+    "intensity = 2.0\n"
     "offset = 0 0 0\n"
     "outward = 1\n"
+    "; cone = 25\n"
+    "softness = 0.3\n"
     "\n"
     "[Glow.OtherGlows]\n"
     "; Neutral-white glows that are none of the above: reverse lamps, coronas.\n"
@@ -427,6 +433,12 @@ static bool ApplyGlowKey(const Section& section, const char* key, const char* va
     if (EqualNoCase(key, "color") || EqualNoCase(key, "colour"))
         return Assign(ParseVector3, value, tuning.HasColor, tuning.Color);
 
+    if (EqualNoCase(key, "cone"))
+        return Assign(ParseFloat, value, tuning.HasCone, tuning.Cone);
+
+    if (EqualNoCase(key, "softness"))
+        return Assign(ParseFloat, value, tuning.HasSoftness, tuning.Softness);
+
     return false;
 }
 
@@ -563,6 +575,12 @@ static void ReadLegacySettings()
         const char* value = TrimInPlace(separator + 1);
 
         if ((*key == '\0') || (*value == '\0'))
+            continue;
+
+        // Not carried over: its scale changed. It was a damping factor (0.05) for a headlight that was
+        // a point light in the wrong place; it is now the brightness of an aimed beam, and the old
+        // value would leave headlights all but dark.
+        if (EqualNoCase(key, "lighthead"))
             continue;
 
         LegacySetting& setting = s_legacy[s_legacy_count++];
