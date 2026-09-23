@@ -107,6 +107,29 @@ mmGame::mmGame()
     BangerProjectile = nullptr;
 }
 
+// The orbital camera, owned by the game it was installed in.
+//
+// It used to be a function-local static, and that crashed the game on exit. OrbitCamCS::Init names
+// the node after the car, and asNode's name is a ConstString, so it is arts_strdup'd onto the engine
+// heap. That heap is torn down behind the race: leaving a race resets the arena wholesale, with no
+// destructors run (see agiDX9Pipeline::EndGfx), and at process exit the allocator is gone too. The
+// static outlived both. Its destructor ran from atexit and arts_free'd a name whose heap no longer
+// existed, which is the crash on exit. Starting a second race was the same bug earlier on, because
+// SetName frees the previous name before storing the new one.
+//
+// Now it is allocated when first toggled on and deleted in ~mmGame, while the game's heap still
+// exists. Nothing else holds it: the camera is never parented into the node tree, and the view
+// that points at it is torn down with the player just before it.
+static OrbitCamCS* OrbitCam = nullptr;
+static bool OrbitCamActive = false;
+
+static void ReleaseOrbitCam()
+{
+    delete OrbitCam;
+    OrbitCam = nullptr;
+    OrbitCamActive = false;
+}
+
 mmGame::~mmGame()
 {
     if (MMCURRPLAYER.Loaded && EnableSave)
@@ -154,6 +177,11 @@ mmGame::~mmGame()
 
         pCullCity = nullptr;
         Player = nullptr;
+
+        // After the player, whose view may still be pointing at it, and before the heap it lives
+        // on goes away. See OrbitCam.
+        ReleaseOrbitCam();
+
         Lamp = nullptr;
         LampCS = nullptr;
         EventQueue = nullptr;
@@ -172,7 +200,7 @@ mmGame::~mmGame()
 // Installs or removes the orbital camera, leaving the game's own camera state untouched: CamIndex
 // keeps pointing at whichever camera was in the rotation, and restoring simply hands that camera
 // back. The camera itself is never parented into the node tree - mmViewCS::Update calls the current
-// camera's Update() through the vtable and copies its matrix out - so nothing owns or frees it.
+// camera's Update() through the vtable and copies its matrix out - so only this file owns it.
 static void ToggleOrbitCam(mmPlayer* player)
 {
     if (!player || !player->ViewCS)
@@ -182,22 +210,26 @@ static void ToggleOrbitCam(mmPlayer* player)
     if ((player->InAutoCam != 0) || (player->InPreRaceCam != 0))
         return;
 
-    static OrbitCamCS orbit_cam;
-    static bool orbit_active = false;
+    if (OrbitCam == nullptr)
+    {
+        OrbitCam = new OrbitCamCS();
+        OrbitCamActive = false;
+    }
 
-    // The camera outlives a race but its car does not. Anything left from a previous race is no
-    // longer installed, so treat it as inactive rather than restoring from a stale pointer.
-    if (orbit_cam.Car != &player->Car)
-        orbit_active = false;
+    // Belt and braces: ~mmGame releases the camera, so it should never see a different car. If it
+    // does, it is not installed in this view, so treat it as inactive rather than restoring from a
+    // stale pointer.
+    if (OrbitCam->Car != &player->Car)
+        OrbitCamActive = false;
 
     // Transition kind 3 over 0.8 seconds, matching ToggleCam. NewCam returns 0 and changes nothing
     // if the view is already blending, so only latch the state once it has actually accepted.
-    if (!orbit_active)
+    if (!OrbitCamActive)
     {
-        orbit_cam.Init(&player->Car, player->ViewCS);
+        OrbitCam->Init(&player->Car, player->ViewCS);
 
-        if (player->ViewCS->NewCam(&orbit_cam, 3, 0.8f, Callback {}) != 0)
-            orbit_active = true;
+        if (player->ViewCS->NewCam(OrbitCam, 3, 0.8f, Callback {}) != 0)
+            OrbitCamActive = true;
 
         return;
     }
@@ -208,7 +240,7 @@ static void ToggleOrbitCam(mmPlayer* player)
 
     // NewCam dereferences its argument, so never hand it a null camera.
     if ((previous != nullptr) && (player->ViewCS->NewCam(previous, 3, 0.8f, Callback {}) != 0))
-        orbit_active = false;
+        OrbitCamActive = false;
 }
 
 void mmGame::UpdateDebugInput()

@@ -146,6 +146,49 @@ static mem::cmd_param PARAM_d3d9_rhview {
 mem::cmd_param PARAM_d3d9_legacydepth {
     "d3d9legacydepth", "Fold agiMeshSet::DepthScale/DepthOffset into PROJECTION (breaks RTX Remix)"};
 
+// -d3d9worldfog: whether hardware-transformed (world) draws carry fixed-function fog.
+//
+// RTX Remix does not ignore D3D9 fog. It reads FOGENABLE/FOGTABLEMODE/FOGSTART/FOGEND/FOGCOLOR off
+// the draws it path traces and rebuilds them as its own volumetric fog. Once 2c74846 put
+// D3DFOG_LINEAR back on world draws (start 1, end mmCullCity's FogEnd, colour SkyColor), Remix
+// received a real fog ramp for the first time, and in its units that ramp closes within a few metres
+// of the camera. The whole scene comes out in fog colour, which is the reported "cars and road look
+// white". 72a6dba, the last build reported correct under Remix, sent FOGTABLEMODE = FOGVERTEXMODE =
+// NONE on those draws, which Remix reads as no fog at all.
+//
+// Plain D3D9 needs that fog, because rasterised fog is the only distance cue the city has. So the
+// default follows the device: off when the Remix bridge is detected, on otherwise. -d3d9worldfog 1
+// forces it on, for tuning Remix's own fog. -d3d9worldfog 0 forces it off, for a Remix install that
+// agiDX9RemixBridgeActive() does not recognise.
+static mem::cmd_param PARAM_d3d9_worldfog {
+    "d3d9worldfog", "Fixed-function fog on world draws (default: off under RTX Remix, on otherwise)"};
+
+static bool agiDX9WorldFogWanted()
+{
+    if (bool forced = false; PARAM_d3d9_worldfog.get(forced))
+        return forced;
+
+    return !agiDX9RemixBridgeActive();
+}
+
+// -d3d9nostatecache: send every render state, stage state, transform, FVF and stage-0 binding to
+// the device, even when the value has not changed. This turns off the filter in front of
+// agiDX9Rasterizer (agiDX9WorldStateCache).
+//
+// It is a diagnostic switch. The filter only drops a call the device already agrees with, so
+// turning it off should change nothing but speed. If the picture changes with it on, some writer
+// is reaching the device without going through the filter or invalidating it, and that is a bug to
+// find. Read once, at the first write.
+static mem::cmd_param PARAM_d3d9_nostatecache {
+    "d3d9nostatecache", "Send every device state write, even unchanged ones (diagnostic)"};
+
+static bool agiDX9StateCacheEnabled()
+{
+    static const bool enabled = !PARAM_d3d9_nostatecache.get_or(false);
+
+    return enabled;
+}
+
 static u32 ImmPrimType = D3DPT_TRIANGLELIST;
 
 static agiVtx* ImmVtxBase = nullptr;
@@ -591,7 +634,8 @@ static void WorldSetRenderState(IDirect3DDevice9* device, D3DRENDERSTATETYPE sta
 
     if (index < agiDX9WorldStateCache::kRenderStates)
     {
-        if (g_WorldCache.RenderStateKnown[index] && (g_WorldCache.RenderState[index] == value))
+        if (agiDX9StateCacheEnabled() && g_WorldCache.RenderStateKnown[index] &&
+            (g_WorldCache.RenderState[index] == value))
             return;
 
         g_WorldCache.RenderState[index] = value;
@@ -616,7 +660,7 @@ static void WorldSetTexture(IDirect3DDevice9* device, DWORD stage, IDirect3DText
 {
     if (stage < agiDX9WorldStateCache::kStages)
     {
-        if (g_WorldCache.TextureKnown[stage] && (g_WorldCache.Texture[stage] == texture))
+        if (agiDX9StateCacheEnabled() && g_WorldCache.TextureKnown[stage] && (g_WorldCache.Texture[stage] == texture))
             return;
 
         g_WorldCache.Texture[stage] = texture;
@@ -641,7 +685,8 @@ static void WorldSetTextureStageState(IDirect3DDevice9* device, DWORD stage, D3D
 
     if ((stage < agiDX9WorldStateCache::kStages) && (index < agiDX9WorldStateCache::kStageStates))
     {
-        if (g_WorldCache.StageStateKnown[stage][index] && (g_WorldCache.StageState[stage][index] == value))
+        if (agiDX9StateCacheEnabled() && g_WorldCache.StageStateKnown[stage][index] &&
+            (g_WorldCache.StageState[stage][index] == value))
             return;
 
         g_WorldCache.StageState[stage][index] = value;
@@ -681,7 +726,7 @@ static void WorldSetTransform(IDirect3DDevice9* device, D3DTRANSFORMSTATETYPE st
 
     if (cached)
     {
-        if (*known && (std::memcmp(cached, &matrix, sizeof(matrix)) == 0))
+        if (agiDX9StateCacheEnabled() && *known && (std::memcmp(cached, &matrix, sizeof(matrix)) == 0))
             return;
 
         *cached = matrix;
@@ -693,7 +738,7 @@ static void WorldSetTransform(IDirect3DDevice9* device, D3DTRANSFORMSTATETYPE st
 
 static void WorldSetFVF(IDirect3DDevice9* device, DWORD fvf)
 {
-    if (g_WorldCache.FvfKnown && (g_WorldCache.Fvf == fvf))
+    if (agiDX9StateCacheEnabled() && g_WorldCache.FvfKnown && (g_WorldCache.Fvf == fvf))
         return;
 
     g_WorldCache.Fvf = fvf;
@@ -1978,7 +2023,8 @@ static void MirroredSetLight(IDirect3DDevice9* device, DWORD index, const D3DLIG
     if (index >= kMaxWorldLights)
         return;
 
-    if (g_LightMirror.LightKnown[index] && (std::memcmp(&g_LightMirror.Lights[index], &light, sizeof(light)) == 0))
+    if (agiDX9StateCacheEnabled() && g_LightMirror.LightKnown[index] &&
+        (std::memcmp(&g_LightMirror.Lights[index], &light, sizeof(light)) == 0))
         return;
 
     g_LightMirror.Lights[index] = light;
@@ -1992,7 +2038,7 @@ static void MirroredLightEnable(IDirect3DDevice9* device, DWORD index, bool enab
     if (index >= kMaxWorldLights)
         return;
 
-    if (g_LightMirror.EnabledKnown[index] && (g_LightMirror.Enabled[index] == enable))
+    if (agiDX9StateCacheEnabled() && g_LightMirror.EnabledKnown[index] && (g_LightMirror.Enabled[index] == enable))
         return;
 
     g_LightMirror.Enabled[index] = enable;
@@ -2003,7 +2049,8 @@ static void MirroredLightEnable(IDirect3DDevice9* device, DWORD index, bool enab
 
 static void MirroredSetMaterial(IDirect3DDevice9* device, const D3DMATERIAL9& material)
 {
-    if (g_LightMirror.MaterialKnown && (std::memcmp(&g_LightMirror.Material, &material, sizeof(material)) == 0))
+    if (agiDX9StateCacheEnabled() && g_LightMirror.MaterialKnown &&
+        (std::memcmp(&g_LightMirror.Material, &material, sizeof(material)) == 0))
         return;
 
     g_LightMirror.Material = material;
@@ -2862,6 +2909,12 @@ bool agiDX9Rasterizer::MeshWorld(agiWorldVtx* vertices, i32 vertex_count, u16* i
                 fog_enable = false;
         }
     }
+
+    // Under RTX Remix, world draws carry no fixed-function fog unless asked for. See
+    // agiDX9WorldFogWanted() - Remix turns this state into its own volumetric fog and the city
+    // comes out washed white.
+    if (!agiDX9WorldFogWanted())
+        fog_enable = false;
 
     WorldSetRenderState(device, D3DRS_FOGENABLE, fog_enable ? TRUE : FALSE);
 
