@@ -25,19 +25,17 @@
 
 #include "dx9_windows.h"
 
-// remix_c.h is third-party (MIT, NVIDIA), vendored from bridge-remix - see dx9remix.h for why that
-// copy and not dxvk-remix's. Its only local change is the loader guard described below; beyond that
-// it is kept out of this project's warning level rather than edited, since its error-code enum
-// carries HRESULT-style values above INT_MAX, which a strict build flags.
+// remix_c.h is third-party (MIT, NVIDIA and the Remix Plus contributors), vendored unmodified from
+// Remix Plus (RemixProjGroup/dxvk-remix 9aab34bd, API 0.1000.0) - see dx9remix.h for why that copy.
+// It is kept out of this project's warning level rather than edited: its error-code enum carries
+// HRESULT-style values above INT_MAX, which a strict build flags.
 //
 // REMIX_ALLOW_X86: the header refuses 32-bit targets because the ray tracing runtime cannot run in
 // one. That is true and beside the point - we only use its types, and the bridge client that
-// implements them IS 32-bit. bridge-remix's own bridge_remix_api.h does exactly this.
+// implements them IS 32-bit. The Remix Plus API reference documents exactly this use.
 //
 // REMIX_WINAPI_NO_LIBRARY_LOADER: skips the header's inline DLL loader. We never load the runtime
-// ourselves; the bridge client is already the process's D3D9 module. bridge-remix's 0.5.1 copy did
-// not guard that block yet, and it does not compile as strict C++, so the guard was added to the
-// vendored file - the same guard later dxvk-remix headers carry.
+// ourselves; the bridge client is already the process's D3D9 module.
 #pragma warning(push, 0)
 #ifdef __clang__
 #    pragma clang diagnostic push
@@ -55,7 +53,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstring>
+#include <initializer_list>
 
 define_dummy_symbol(agidx9_dx9remix);
 
@@ -93,10 +93,24 @@ static mem::cmd_param PARAM_remix_debug {"remixapidebug", "Log Remix API light c
 
 namespace
 {
-    // Every light this module creates carries this tag in the top half of its hash and a glow light
-    // id (agiGlowLight::Id) in the bottom half. The runtime keys API lights by hash and requires it
-    // to be non-zero; the tag keeps ours recognisable in a Remix capture and away from zero.
-    constexpr u64 kHashTag = 0x4F31353600000000ull; // "O156"
+    // Every light this module creates has a hash made of three parts:
+    //
+    //   bits 48-63  a tag, "O1", which keeps ours recognisable in a Remix capture and away from 0
+    //               (the runtime keys API lights by hash and rejects 0)
+    //   bits 32-47  a generation, bumped each time the light is re-sent
+    //   bits  0-31  the glow light's id (agiGlowLight::Id)
+    //
+    // The generation is what makes re-sending safe on every runtime. An update through the bridge is
+    // a destroy and a create (see dx9remix.h), and Remix Plus does not destroy immediately: it queues
+    // the erase for the start of the next frame, by hash. Re-creating under the SAME hash would have
+    // that queued erase wipe the new light a frame later, and every moving light would go dark. A new
+    // hash per generation is never touched by the old one's erase.
+    constexpr u64 kHashTag = 0x4F31000000000000ull;
+
+    u64 LightHash(u32 glow_id, u16 generation)
+    {
+        return kHashTag | (static_cast<u64>(generation) << 32) | glow_id;
+    }
 
     constexpr f32 kPi = 3.14159265f;
 
@@ -114,6 +128,7 @@ namespace
     struct RemixLight
     {
         u32 GlowId; // 0 = free slot
+        u16 Generation;
         remixapi_LightHandle Handle;
         Vector3 Position;
         Vector3 Radiance;
@@ -127,7 +142,18 @@ namespace
         Vector3 Position;
         Vector3 Radiance;
         f32 Power;
+        bool Dynamic;
         i32 Slot;
+    };
+
+    // The four functions this module calls, taken out of whichever interface table layout the bridge
+    // filled in - see IdentifyBridge.
+    struct RemixFunctions
+    {
+        PFN_remixapi_CreateLight CreateLight;
+        PFN_remixapi_DestroyLight DestroyLight;
+        PFN_remixapi_DrawLightInstance DrawLightInstance;
+        PFN_remixapi_SetConfigVariable SetConfigVariable;
     };
 
     constexpr u32 kMaxLights = AGI_MAX_GLOW_LIGHTS;
@@ -153,7 +179,7 @@ namespace
         u32 Failed;
     };
 
-    remixapi_Interface s_remix {};
+    RemixFunctions s_remix {};
     bool s_active = false;
     bool s_init_tried = false;
 
@@ -282,14 +308,23 @@ static bool ResolveGlow(const agiGlowLight& glow, f32 radius, Candidate& out)
     out.Position = glow.Position;
     out.Radiance = {std::max(radiance.x, 0.0f), std::max(radiance.y, 0.0f), std::max(radiance.z, 0.0f)};
     out.Power = power;
+
+    // Vehicle lamps are dynamic even when the car is parked: it can pull away at any moment. Anything
+    // else is dynamic only while it is actually moving. Remix Plus uses this to decide whether a light
+    // may be put to sleep - a static light that has not changed for a while stops being updated, to
+    // keep its denoiser history. Other runtimes ignore the field.
+    out.Dynamic = (kind == agiGlowKind::Vehicle) || (kind == agiGlowKind::Headlight) ||
+        (glow.Velocity.Mag2() > kMoveEpsilonSq);
     out.Slot = -1;
 
     return true;
 }
 
-static bool CreateLight(u32 glow_id, const Vector3& position, const Vector3& radiance, f32 radius,
-    remixapi_LightHandle& out_handle)
+static bool CreateLight(const Candidate& candidate, u16 generation, f32 radius, remixapi_LightHandle& out_handle)
 {
+    const Vector3& position = candidate.Position;
+    const Vector3& radiance = candidate.Radiance;
+
     remixapi_LightInfoSphereEXT sphere {};
     sphere.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_SPHERE_EXT;
     sphere.pNext = nullptr;
@@ -298,15 +333,20 @@ static bool CreateLight(u32 glow_id, const Vector3& position, const Vector3& rad
     sphere.shaping_hasvalue = 0;
     sphere.shaping_value = {};
 
-    // Not forwarded by the bridge (its serialiser stops at shaping_value), so the runtime sees 0 and
-    // these lights take no part in volumetrics. Set anyway, for the day it is.
+    // The Remix Plus bridge forwards this; NVIDIA's bridge stops at shaping_value, so there the
+    // runtime sees 0 and these lights take no part in volumetrics.
     sphere.volumetricRadianceScale = 1.0f;
 
+    // remixapi_LightInfo grew isDynamic and ignoreViewModel after NVIDIA's 0.5.1, at the END of the
+    // struct. A bridge built against the older header serialises only the prefix it knows, so this
+    // one layout is right for every bridge IdentifyBridge accepts.
     remixapi_LightInfo info {};
     info.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO;
     info.pNext = &sphere;
-    info.hash = kHashTag | glow_id;
+    info.hash = LightHash(candidate.GlowId, generation);
     info.radiance = {radiance.x, radiance.y, radiance.z};
+    info.isDynamic = candidate.Dynamic ? 1u : 0u;
+    info.ignoreViewModel = 0;
 
     out_handle = nullptr;
 
@@ -322,8 +362,9 @@ static bool CreateLight(u32 glow_id, const Vector3& position, const Vector3& rad
     if (PARAM_remix_debug.get_or(false) && (s_debug_logged < 64))
     {
         ++s_debug_logged;
-        Displayf("REMIXAPI: light %08X pos=(%.1f %.1f %.1f) radiance=(%.1f %.1f %.1f) r=%.2f", glow_id, position.x,
-            position.y, position.z, radiance.x, radiance.y, radiance.z, radius);
+        Displayf("REMIXAPI: light %08X gen=%u pos=(%.1f %.1f %.1f) radiance=(%.1f %.1f %.1f) r=%.2f%s",
+            candidate.GlowId, static_cast<u32>(generation), position.x, position.y, position.z, radiance.x, radiance.y,
+            radiance.z, radius, candidate.Dynamic ? " dynamic" : "");
     }
 
     return true;
@@ -380,6 +421,106 @@ static void ApplyConfigOverrides()
     }
 }
 
+// WHICH BRIDGE, AND WHERE IT PUT ITS FUNCTIONS
+//
+// remixapi_InitializeLibrary copies out a remixapi_Interface laid out by the header the BRIDGE was
+// built against. Neither bridge looks at the version we pass, and three layouts are in circulation
+// that disagree about where the light functions are:
+//
+//   NVIDIA bridge-remix, API 0.5.1      21 slots. CreateLight is slot 7.
+//   Remix Plus before 2026-06-28, 0.6.4 41 slots. Inserts CreateMeshBatched and CreateLightBatched,
+//                                       and has SetCameraMediumMaterial before DrawInstance.
+//                                       CreateLight is slot 9.
+//   Remix Plus 0.1000.0 (vendored here) 41 slots. SetCameraMediumMaterial moved after Present
+//                                       ("interface-struct realign", Remix Plus 2d6bde57).
+//                                       CreateLight is slot 8.
+//
+// Reading the table with the wrong header calls the wrong function: with this header on NVIDIA's
+// bridge, "CreateLight" is DestroyLight. And copying a 41-slot table into a 21-slot struct overruns
+// the stack. So the bridge fills a zeroed buffer bigger than any of them, and the pattern of slots it
+// filled identifies the layout exactly. Each bridge fills a fixed set of named fields (read from
+// their src/client/remix_api.cpp), and those land in a different set of slots in each layout.
+//
+// Anything else is refused rather than guessed at. A future bridge that forwards more functions will
+// land here until its layout is added below - the log line gives its filled-slot mask to do that.
+namespace
+{
+    using AnyFn = void(REMIXAPI_PTR*)();
+
+    constexpr u32 kMaxSlots = 64;
+
+    struct InterfaceBuffer
+    {
+        remixapi_Interface Interface;
+        AnyFn Slack[16];
+    };
+
+    static_assert(sizeof(InterfaceBuffer) <= sizeof(AnyFn) * kMaxSlots, "raise kMaxSlots");
+    static_assert(sizeof(InterfaceBuffer) % sizeof(AnyFn) == 0, "remixapi_Interface is not all function pointers");
+
+    // The slots compared: every slot any known bridge can write.
+    constexpr u32 kFilledSlotCount = static_cast<u32>(sizeof(remixapi_Interface) / sizeof(AnyFn));
+    static_assert(kFilledSlotCount <= 64, "the filled-slot mask is a u64");
+
+    constexpr u64 SlotMask(std::initializer_list<u32> slots)
+    {
+        u64 mask = 0;
+
+        for (u32 slot : slots)
+            mask |= 1ull << slot;
+
+        return mask;
+    }
+
+    struct BridgeLayout
+    {
+        const char* Name;
+        u64 FilledSlots;
+        u32 CreateLight;
+        u32 DestroyLight;
+        u32 DrawLightInstance;
+        u32 SetConfigVariable;
+    };
+
+    constexpr BridgeLayout kBridgeLayouts[] {
+        {"NVIDIA RTX Remix bridge (API 0.5.1)", SlotMask({1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12}), 7, 8, 9, 10},
+        {"Remix Plus bridge (API 0.6.4, a build from before 2026-06-28)",
+            SlotMask({1, 2, 3, 5, 8, 9, 11, 12, 13, 18, 19, 30, 31, 33, 34, 36, 40}), 9, 11, 12, 13},
+        {"Remix Plus bridge (API 0.1000.0)",
+            SlotMask({1, 2, 3, 5, 7, 8, 10, 11, 12, 17, 18, 30, 31, 33, 34, 36, 40}), 8, 10, 11, 12},
+    };
+
+    // The last entry must describe the vendored header itself, and does.
+    static_assert(offsetof(remixapi_Interface, CreateLight) == 8 * sizeof(AnyFn), "remix_c.h layout changed");
+    static_assert(offsetof(remixapi_Interface, DestroyLight) == 10 * sizeof(AnyFn), "remix_c.h layout changed");
+    static_assert(offsetof(remixapi_Interface, DrawLightInstance) == 11 * sizeof(AnyFn), "remix_c.h layout changed");
+    static_assert(offsetof(remixapi_Interface, SetConfigVariable) == 12 * sizeof(AnyFn), "remix_c.h layout changed");
+    static_assert(offsetof(remixapi_Interface, GetGameValue) == 40 * sizeof(AnyFn), "remix_c.h layout changed");
+} // namespace
+
+static const BridgeLayout* IdentifyBridge(const AnyFn (&slots)[kMaxSlots])
+{
+    u64 filled = 0;
+
+    for (u32 i = 0; i < kFilledSlotCount; ++i)
+        filled |= slots[i] ? (1ull << i) : 0ull;
+
+    // Nothing may have been written past the largest known table either.
+    for (u32 i = kFilledSlotCount; i < kMaxSlots; ++i)
+    {
+        if (slots[i])
+            return nullptr;
+    }
+
+    for (const BridgeLayout& layout : kBridgeLayouts)
+    {
+        if (layout.FilledSlots == filled)
+            return &layout;
+    }
+
+    return nullptr;
+}
+
 void agiDX9RemixApiInit()
 {
     if (s_init_tried || !PARAM_remixapi.get_or(false))
@@ -411,8 +552,8 @@ void agiDX9RemixApiInit()
 
     if (!initialize)
     {
-        Warningf("Remix API: no loaded D3D9 module exports remixapi_InitializeLibrary. -remixapi needs the RTX Remix "
-                 "bridge (the d3d9.dll from bridge-remix); Remix API lights are off.");
+        Warningf("Remix API: no loaded D3D9 module exports remixapi_InitializeLibrary. -remixapi needs an RTX Remix "
+                 "bridge d3d9.dll (NVIDIA's or Remix Plus's); Remix API lights are off.");
         return;
     }
 
@@ -421,8 +562,10 @@ void agiDX9RemixApiInit()
     info.pNext = nullptr;
     info.version = REMIXAPI_VERSION_MAKE(REMIXAPI_VERSION_MAJOR, REMIXAPI_VERSION_MINOR, REMIXAPI_VERSION_PATCH);
 
-    remixapi_Interface remix {};
-    const remixapi_ErrorCode status = initialize(&info, &remix);
+    // Zeroed, and larger than any known table, so a bridge writes its whole table into it without
+    // overrunning, and every slot it does not fill reads as null. See IdentifyBridge.
+    InterfaceBuffer buffer {};
+    const remixapi_ErrorCode status = initialize(&info, &buffer.Interface);
 
     if (status != REMIXAPI_ERROR_CODE_SUCCESS)
     {
@@ -442,21 +585,36 @@ void agiDX9RemixApiInit()
         return;
     }
 
-    if (!remix.CreateLight || !remix.DestroyLight || !remix.DrawLightInstance)
+    AnyFn slots[kMaxSlots] {};
+    std::memcpy(slots, &buffer, sizeof(buffer));
+
+    const BridgeLayout* layout = IdentifyBridge(slots);
+
+    if (!layout)
     {
-        Warningf("Remix API: the bridge did not provide the light functions; Remix API lights are off.");
+        u64 filled = 0;
+
+        for (u32 i = 0; i < kFilledSlotCount; ++i)
+            filled |= slots[i] ? (1ull << i) : 0ull;
+
+        Warningf("Remix API: unrecognised bridge (filled interface slots %08X%08X). Not calling it: a wrong guess "
+                 "about its layout would call the wrong functions. Remix API lights are off - see "
+                 "docs/remix_api_plan.md, section 2.",
+            static_cast<u32>(filled >> 32), static_cast<u32>(filled));
         return;
     }
 
-    s_remix = remix;
+    s_remix.CreateLight = reinterpret_cast<PFN_remixapi_CreateLight>(slots[layout->CreateLight]);
+    s_remix.DestroyLight = reinterpret_cast<PFN_remixapi_DestroyLight>(slots[layout->DestroyLight]);
+    s_remix.DrawLightInstance = reinterpret_cast<PFN_remixapi_DrawLightInstance>(slots[layout->DrawLightInstance]);
+    s_remix.SetConfigVariable = reinterpret_cast<PFN_remixapi_SetConfigVariable>(slots[layout->SetConfigVariable]);
     s_active = true;
 
     // Only now start paying for the harvest: the glow registry, its per-frame ageing and each glow
     // texture's colour grid all exist for this consumer and cost nothing while it is absent.
     agiGlowHarvestEnabled = true;
 
-    Displayf("Remix API: connected through the bridge (header %u.%u.%u)", static_cast<u32>(REMIXAPI_VERSION_MAJOR),
-        static_cast<u32>(REMIXAPI_VERSION_MINOR), static_cast<u32>(REMIXAPI_VERSION_PATCH));
+    Displayf("Remix API: connected through the %s", layout->Name);
 
     ApplyConfigOverrides();
 }
@@ -553,14 +711,16 @@ void agiDX9RemixApiSubmitFrame()
             if (!moved && !recoloured && !resized)
                 continue;
 
-            // Destroy first, then create under the same hash. The other order would have the
-            // destroy - which the runtime applies by hash - remove the light just created.
+            // Retire the old light and create its successor under the next generation's hash - see
+            // LightHash for why the hash must change. The old destroy is by the old hash, so the two
+            // cannot interfere whichever runtime applies them, or when.
             if (light.Handle)
                 s_remix.DestroyLight(light.Handle);
 
             light.Handle = nullptr;
+            ++light.Generation;
 
-            if (!CreateLight(candidate.GlowId, candidate.Position, candidate.Radiance, radius, light.Handle))
+            if (!CreateLight(candidate, light.Generation, radius, light.Handle))
             {
                 light = {};
                 --s_live;
@@ -585,10 +745,11 @@ void agiDX9RemixApiSubmitFrame()
 
         RemixLight& light = s_lights[free_cursor];
 
-        if (!CreateLight(candidate.GlowId, candidate.Position, candidate.Radiance, radius, light.Handle))
+        if (!CreateLight(candidate, 0, radius, light.Handle))
             continue;
 
         light.GlowId = candidate.GlowId;
+        light.Generation = 0;
         light.Position = candidate.Position;
         light.Radiance = candidate.Radiance;
         light.Radius = radius;

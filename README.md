@@ -133,11 +133,13 @@ These act on the world-space path, so they apply to this backend only.
 **RTX Remix API**
 
 The game's street lamps, traffic signals and vehicle lights are glow sprites that light nothing in
-the original. With `-remixapi`, each one is sent to Remix as a real light through the
-[Remix API](https://github.com/NVIDIAGameWorks/bridge-remix). This needs the RTX Remix bridge and
-`exposeRemixApi = True` in its `bridge.conf` (in the `.trex` folder next to the game's `d3d9.dll`);
-without that line the bridge refuses and the log says so. The design, what the bridge does and does
-not forward, and the phases still to come are in [docs/remix_api_plan.md](docs/remix_api_plan.md).
+the original. With `-remixapi`, each one is sent to Remix as a real light through the Remix API.
+This works with NVIDIA's RTX Remix bridge and with
+[Remix Plus](https://github.com/RemixProjGroup/dxvk-remix), and needs `exposeRemixApi = True` in
+`bridge.conf` (in the `.trex` folder next to the game's `d3d9.dll`); without that line the bridge
+refuses and the log says so. The log also names which bridge it found. The design, what each bridge
+does and does not forward to a 32-bit game, and the phases still to come are in
+[docs/remix_api_plan.md](docs/remix_api_plan.md).
 
 | Switch | Default | Effect |
 | --- | --- | --- |

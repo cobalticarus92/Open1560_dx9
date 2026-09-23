@@ -24,19 +24,22 @@
 // runtime directly. See docs/remix_api_plan.md for the design and the phases still to come.
 //
 // This game is 32-bit, and the Remix runtime is 64-bit only, so nothing here talks to the runtime
-// itself. It talks to the bridge client - the 32-bit d3d9.dll of bridge-remix - which exports its
-// own remixapi_InitializeLibrary and forwards each call to the 64-bit server over the same channel
-// as the D3D9 commands. Everything below is shaped by what the bridge supports, not by what
-// remix_c.h declares:
+// itself. It talks to the bridge client - the 32-bit d3d9.dll - which exports its own
+// remixapi_InitializeLibrary and forwards each call to the 64-bit server over the same channel as
+// the D3D9 commands. Everything below is shaped by what the bridges support, not by what remix_c.h
+// declares. Two bridges are supported, NVIDIA's bridge-remix and Remix Plus's (the `bridge` folder
+// of RemixProjGroup/dxvk-remix), and they share these rules:
 //
-//   - The bridge refuses to initialise unless bridge.conf has `exposeRemixApi = True`.
-//   - It serialises our structs using ITS copy of remix_c.h (0.5.1) and ignores the version we
-//     pass, so remix_c.h here is vendored from bridge-remix (commit 7dbbd371), not from dxvk-remix.
-//     Before using any struct not used here yet, diff it against the bridge's copy.
-//   - Startup, Shutdown, Present, SetupCamera, dxvk_CreateD3D9/RegisterD3D9Device and the picking
-//     calls are not forwarded. Lights, materials, meshes, instances and SetConfigVariable are.
+//   - A bridge refuses to initialise unless bridge.conf has `exposeRemixApi = True`.
+//   - It ignores the version we pass and copies out its interface table laid out by ITS header.
+//     Three layouts are in circulation, so the table is identified before anything in it is called
+//     - see IdentifyBridge in the .cpp. remix_c.h here is Remix Plus's current header (0.1000.0).
+//   - Only lights, materials, meshes, instances and SetConfigVariable are forwarded. Remix Plus also
+//     forwards SetGameValue/GetGameValue; its UpdateLightDefinition and AutoInstancePersistentLights
+//     are bridge stubs that fail, so a 32-bit game cannot use them yet.
 //   - Every CreateLight mints a new bridge handle, and only DestroyLight frees it. Recreating a
-//     light in place (same hash, no destroy) would leak one server-side map entry per call.
+//     light in place (same hash, no destroy) would leak one server-side map entry per call, so an
+//     update is a destroy and a create - under a new hash, because Remix Plus defers the destroy.
 
 // Initialises the API once per process, the first time it is called with the Remix bridge
 // detected and -remixapi on. Must run after the D3D9 device exists: the bridge binds API calls to

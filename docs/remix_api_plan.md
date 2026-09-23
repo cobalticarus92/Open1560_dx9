@@ -20,6 +20,7 @@ The sun and moon are deliberately out of scope for now.
 | 4 | Engine dynamic lights through the API instead of D3DLIGHT9 translation | Planned |
 | 5 | The flare sprites themselves: what Remix should do with the glow cards | Planned |
 | 6 | Lightning as a scene-wide light burst | Planned |
+| 7 | Update lights in place, once a bridge forwards it | Waiting on Remix Plus's bridge |
 
 Code: `code/midtown/agidx9/dx9remix.{h,cpp}`, with the harvest in `agiworld/meshrend.cpp`
 (billboards) and `agidx9/dx9rsys.cpp` (glow meshes).
@@ -29,10 +30,9 @@ Code: `code/midtown/agidx9/dx9remix.{h,cpp}`, with the harvest in `agiworld/mesh
 ## 2. How the game reaches the runtime
 
 The game is 32-bit. The Remix runtime is 64-bit only. So the game never talks to the runtime: it
-talks to the **bridge client**, the 32-bit `d3d9.dll` from
-[bridge-remix](https://github.com/NVIDIAGameWorks/bridge-remix), which serialises each call and sends
-it to the 64-bit bridge server over the same channel as the D3D9 commands. The server then calls
-the real runtime.
+talks to the **bridge client**, a 32-bit `d3d9.dll`, which serialises each call and sends it to the
+64-bit bridge server over the same channel as the D3D9 commands. The server then calls the real
+runtime.
 
 ```
  game (x86)                     bridge client (x86 d3d9.dll)        bridge server (x64)      Remix runtime
@@ -46,49 +46,94 @@ the real runtime.
 Because API commands share the D3D9 command stream, they are applied **in order** with the draws.
 That is what makes "submit the lights just before Present" correct.
 
-### 2.1 Facts about the bridge, read from its source
+Two bridges are supported:
 
-All of these come from bridge-remix at commit `7dbbd371` (`src/client/remix_api.cpp`,
-`src/server/main.cpp`, `src/util/util_remixapi.*`) and dxvk-remix `main`
-(`rtx_remix_api.cpp`, `rtx_light_manager.cpp`). They shape the design, and each is easy to trip over.
+| Bridge | Source read | API header |
+|---|---|---|
+| NVIDIA RTX Remix | [bridge-remix](https://github.com/NVIDIAGameWorks/bridge-remix) `7dbbd371` | 0.5.1 |
+| Remix Plus | the `bridge` folder of [RemixProjGroup/dxvk-remix](https://github.com/RemixProjGroup/dxvk-remix) `9aab34bd` | 0.6.4 before 2026-06-28, 0.1000.0 since |
 
-1. **It is opt-in.** `remixapi_InitializeLibrary` returns `REMIXAPI_ERROR_CODE_NOT_INITIALIZED`
-   unless `bridge.conf` has `exposeRemixApi = True`. The game logs exactly that fix when it happens.
-2. **The bridge ignores the version we send and reads our structs with its own header** (0.5.1).
-   So `agidx9/remix_c.h` is the bridge's copy, not dxvk-remix's newer one. The light structs are
-   identical between 0.5.1 and 0.6.5; materials are not. **Before using any other struct, diff it
-   against the bridge's copy.** The vendored file has one local change: a guard around its inline
-   DLL loader, which does not compile as strict C++ and which we never use.
-3. **Only part of the interface is forwarded.** Available: `CreateMaterial`, `DestroyMaterial`,
+Remix Plus's own reference is its
+[`docs/RemixApi.md`](https://github.com/RemixProjGroup/dxvk-remix/blob/main/docs/RemixApi.md). It
+describes the API as the 64-bit runtime implements it. What follows is what a **32-bit** game gets
+through the bridge, which is less.
+
+### 2.1 Facts about the bridges, read from their source
+
+Each comes from the bridge client (`src/client/remix_api.cpp`), server (`src/server/main.cpp`),
+serialisers (`src/util/util_remixapi.*`) and the runtime (`rtx_remix_api.cpp`,
+`rtx_light_manager.cpp`, and Remix Plus's `rtx_fork_light.cpp`). They shape the design, and each is
+easy to trip over.
+
+1. **It is opt-in.** Both bridges return `REMIXAPI_ERROR_CODE_NOT_INITIALIZED` from
+   `remixapi_InitializeLibrary` unless `bridge.conf` has `exposeRemixApi = True`. The game logs
+   exactly that fix when it happens.
+2. **The bridge ignores the version we send, and copies out its interface table in its own
+   layout.** Three layouts exist, and they disagree about where the light functions are:
+
+   | Layout | Slots | `CreateLight` at |
+   |---|---|---|
+   | NVIDIA 0.5.1 | 21 | 7 |
+   | Remix Plus 0.6.4 (before 2026-06-28) | 41 | 9 |
+   | Remix Plus 0.1000.0 | 41 | 8 |
+
+   Remix Plus inserted `CreateMeshBatched` and `CreateLightBatched` into the middle of the table,
+   then moved `SetCameraMediumMaterial` in its 0.1000.0 "interface-struct realign". Reading the
+   table with the wrong header calls the wrong function, and copying a 41-slot table into a
+   21-slot struct overruns the stack. So `agiDX9RemixApiInit` hands the bridge a zeroed buffer
+   bigger than any of them and identifies the layout **by which slots came back filled**. Each
+   bridge fills a fixed set of named fields, and that set lands in different slots in each layout.
+   The three patterns were checked by compiling each bridge's fill list against each header. An
+   unrecognised pattern is refused, with the mask in the log, never guessed at.
+3. **Structs are prefix-compatible.** The vendored header is Remix Plus 0.1000.0. `LightInfo` grew
+   `isDynamic` and `ignoreViewModel` at its end, so an older bridge serialises only the part it
+   knows. `LightInfoSphereEXT` is identical in all three. **Before using any other struct, diff it
+   against the header of every bridge in the table.** Material structs in particular have changed.
+4. **Only part of the interface is forwarded.** Both: `CreateMaterial`, `DestroyMaterial`,
    `CreateMesh`, `DestroyMesh`, `DrawInstance`, `CreateLight`, `DestroyLight`,
-   `DrawLightInstance`, `SetConfigVariable`. Not available: `Startup`, `Shutdown`, `Present`,
-   `SetupCamera`, `dxvk_CreateD3D9`, `dxvk_RegisterD3D9Device`, and picking. The camera needs
-   nothing from us anyway: Remix already reconstructs it from the D3D9 view and projection.
-4. **API calls bind to the most recently created D3D9 device.** Initialisation therefore happens in
+   `DrawLightInstance`, `SetConfigVariable`. Remix Plus adds `SetGameValue` and `GetGameValue`,
+   which make a blocking round trip to the server.
+
+   Remix Plus's `UpdateLightDefinition` and `AutoInstancePersistentLights` are listed in its API
+   reference, and the 64-bit runtime implements them, but **its bridge only stubs them**: they
+   log "not yet plumbed through the bridge" once and fail. The same goes for `GetUIState` and
+   `SetUIState`. A 32-bit game cannot update a light in place or have its lights re-drawn
+   automatically yet. If a later Remix Plus bridge forwards them, section 7 says what to change.
+
+   Neither forwards `Startup`, `Shutdown`, `Present`, `SetupCamera`, `dxvk_CreateD3D9`,
+   `dxvk_RegisterD3D9Device`, or picking. The camera needs nothing from us anyway: Remix already
+   reconstructs it from the D3D9 view and projection.
+5. **API calls bind to the most recently created D3D9 device.** Initialisation therefore happens in
    `agiDX9Pipeline::BeginGfx`, after the context exists. The device is parked, not destroyed,
    across pipeline restarts, so the binding survives going from the menu into a race.
-5. **Every `CreateLight` mints a new bridge handle; only `DestroyLight` frees it.** The server keeps
-   a map from bridge handle to runtime handle. Two consequences:
-   - Updating a light by calling `CreateLight` again with the same hash works in the runtime (it
-     overwrites in place) but leaks one server-side map entry per call. At 50 moving lights and
-     60 fps that is 3,000 entries a second for the whole session. So an update is **destroy, then
-     create**.
-   - The order matters: the runtime destroys **by hash**, so create-then-destroy would remove the
-     light just created.
-   - The cost: destroy-and-create gives the light a new stable identity in the runtime, so the
-     denoiser starts it fresh. Moving lights are re-sent every frame they move. If that shows up
-     as shimmer on vehicle lights, see section 7.
-6. **Lights must be drawn every frame.** The runtime clears its list of drawn API lights at the end
-   of every frame (`m_externalActiveLightList.clear()`). A created light that is not drawn is kept
-   but gives no light.
-7. **`CreateLight` through the bridge always reports success.** The server calls the runtime later
+6. **Every `CreateLight` mints a new bridge handle; only `DestroyLight` frees it.** The server keeps
+   a map from bridge handle to runtime handle. So:
+   - Updating a light by calling `CreateLight` again with the same hash would leak one server-side
+     map entry per call: at 50 moving lights and 60 fps, 3,000 entries a second for the whole
+     session. An update is therefore **destroy, then create**.
+   - **The re-created light needs a new hash.** Remix Plus does not destroy immediately: it queues
+     the erase, by hash, for the start of the next frame. A light re-created under the same hash
+     would be wiped a frame later, and every moving light would go dark. Each light's hash carries
+     a generation that is bumped on every re-send (`LightHash` in `dx9remix.cpp`), so the old
+     light's erase never touches its successor, on either runtime.
+   - The cost: each re-send is a new light to the runtime, so the denoiser starts it fresh. Moving
+     lights are re-sent on every frame they move. If that shows up as shimmer on vehicle lights, see
+     section 8.
+7. **Lights must be drawn every frame.** Upstream clears its list of drawn API lights at the end of
+   every frame. Remix Plus queues each draw and applies it at the start of the next frame, after
+   that frame's erases. Drawing every live light every frame is right for both. A created light
+   that is not drawn is kept but gives no light.
+8. **`isDynamic` matters on Remix Plus.** A light marked static that has not changed for a while is
+   put to sleep, to keep its denoiser history. Vehicle lamps are sent as dynamic, and so is any
+   light that is moving; street lamps and signals are static. NVIDIA's bridge does not send the
+   field.
+9. **`CreateLight` through the bridge always reports success.** The server calls the runtime later
    and can only log a failure. A light the runtime rejected shows up in the bridge server log as
    `Invalid light handle` on its first draw.
-8. **Volumetrics are not forwarded.** The bridge serialises a sphere light only as far as its
-   shaping, so `volumetricRadianceScale` arrives as 0 and these lights take no part in volumetric
-   fog. That is harmless now and a known gap.
-9. The bridge also exports `remixapi_RegisterCallbacks` (begin-scene, end-scene and present hooks).
-   We do not need it: this engine owns its frame loop and knows where the frame ends.
+10. **Volumetrics: Remix Plus only.** Its bridge forwards `volumetricRadianceScale`; NVIDIA's stops
+    at the sphere's shaping, so there it arrives as 0 and the lights take no part in volumetric fog.
+11. Both bridges also export `remixapi_RegisterCallbacks` (begin-scene, end-scene and present hooks).
+    We do not need it: this engine owns its frame loop and knows where the frame ends.
 
 ---
 
@@ -99,7 +144,7 @@ All of these come from bridge-remix at commit `7dbbd371` (`src/client/remix_api.
 - looks up `remixapi_InitializeLibrary` on the module `Direct3DCreate9` came from, then on
   `d3d9_remix.dll` and `d3d9.dll`. The fallbacks cover a chaining proxy that loads the bridge
   behind itself.
-- initialises and checks that the light functions came back.
+- initialises, identifies the bridge's table layout (fact 2), and logs which bridge it found.
 - sets `agiGlowHarvestEnabled`. The harvest, the registry's per-frame ageing and the per-texture
   glow colour grid all cost nothing until this is set.
 - applies `-remixconfig`, a `|`-separated list of `rtx.conf` keys, through `SetConfigVariable`.
@@ -147,7 +192,7 @@ slot by predicted position, and fades a light out over 6 frames once its sprite 
 
 **New: `agiGlowLight::Id`.** A slot's index is not an identity, because `agiUpdateGlowLights`
 compacts the array every frame. Each new light gets an id that is never reused in the process, and
-that id is what a Remix light is keyed on: `hash = 0x4F313536'00000000 | id`.
+that id is what a Remix light is keyed on: `hash = "O1" tag | generation << 32 | id` (fact 6).
 
 ### 4.2 From registry entry to Remix light
 
@@ -220,8 +265,11 @@ Nothing here has run against a live runtime yet: this environment has no Windows
 order:
 
 1. **Connects.** Add `exposeRemixApi = True` to `bridge.conf` and run with `-remixapi`. The log
-   should say `Remix API: connected through the bridge (header 0.5.1)`. If it says the bridge
-   refused, the conf line is not being read (check which `.trex` folder is in use).
+   should name the bridge it found, e.g. `Remix API: connected through the Remix Plus bridge (API
+   0.1000.0)`. If it says the bridge refused, the conf line is not being read (check which `.trex`
+   folder is in use). If it says `unrecognised bridge`, the bridge's table layout is not one of
+   the three in fact 2: send the logged mask along with the Remix build, and the layout can be
+   added.
 2. **Harvest is live.** In a night race, `DX9 CENSUS` should show `glowlights=` well above 0 and
    `cards=... harvested` above 0. If `harvested` is 0 while `seen` is not, see the `CARD-NOTEX` and
    `CARD-NOTGLOW` notes in `remix_api_data_sources.md` §7 (`-glowdebug`).
@@ -277,7 +325,8 @@ With real lights in place, the glow cards (additive `AlphaGlow` quads) are still
 tracing they read either as flat glowing cards or as nothing. The options are Remix texture
 categories (particle, ignore, or a light-converting category), set once in the Remix toolkit and
 saved to `rtx.conf`. The engine cannot compute Remix's texture hashes itself, so this is a toolkit
-step, not a code step. The thing to decide is whether the flare stays visible as a bloom-like
+step, not a code step. Remix Plus's runtime has `dxvk_GetTextureHash` and `AddTextureHash`, which
+would let the game tag its own glow textures, but its bridge forwards neither yet. The thing to decide is whether the flare stays visible as a bloom-like
 sprite or is removed and left to the light.
 
 ### Phase 6 - lightning
@@ -289,22 +338,45 @@ The original lightning only swaps the sky texture for one frame. `agiLightningFl
 destroyed at 0. The latch has to be restored first, and the §3 note about why it must be latched
 before the sky draws still applies.
 
+### Phase 7 - update lights in place (Remix Plus)
+
+Remix Plus's runtime has `UpdateLightDefinition` (change an existing light, keeping its identity)
+and `AutoInstancePersistentLights` (keep drawing live lights without a call per light). Its bridge
+stubs both today (fact 4). When a Remix Plus bridge forwards them:
+
+- Add its table layout to `kBridgeLayouts` (its filled-slot mask changes the moment it fills a new
+  field, so it is refused until then, which is the safe failure).
+- For that layout, re-send a changed light with `UpdateLightDefinition` on its existing handle
+  instead of destroy-and-create. The light keeps one hash and one identity, the denoiser keeps its
+  history, and the generation in the hash stops changing.
+- Optionally drop the per-light `DrawLightInstance` loop for one `AutoInstancePersistentLights`
+  call, if persistent registration is also forwarded. Measure first: per-light draws are cheap.
+
+### Possible later: weather through `SetGameValue` (Remix Plus)
+
+Remix Plus's bridge does forward `SetGameValue`, and its sky system reads a `__weather.*`
+convention (`docs/RemixSkyAPI.md` in Remix Plus). `MMSTATE.Weather` (sun, fog, rain, snow) could
+drive it. This overlaps the sun and moon work, which is out of scope for now, and each call is a
+blocking round trip to the server, so it would be set once per race, not per frame.
+
 ### Possible later: materials
 
 `CreateMaterial` and `CreateMesh` are forwarded, but API materials only apply to API meshes. The
 game's own D3D9 geometry gets its materials from Remix's texture-hash replacements (USD mods), so
 there is nothing to do here unless the game starts sending meshes through the API. If it does,
-remember fact 2: the material structs changed between the bridge's 0.5.1 and later headers.
+remember fact 3: the material structs differ between the bridges' headers.
 
 ---
 
 ## 8. Risks and open questions
 
-- **The API through the bridge is experimental** (the bridge's own words). A bridge update could
-  change its behaviour. The vendored header records which commit it came from.
-- **Destroy-and-create on update** (fact 5) can make moving lights restart denoiser history. If
-  vehicle lights shimmer, the options are: re-send moving lights every other frame, or check whether
-  a newer bridge has an update path. Re-creating in place is not an option because of the leak.
+- **The API through the bridge is experimental** (NVIDIA's bridge's own words), and Remix Plus has
+  already changed its table layout once. A bridge update that changes what it fills is refused at
+  connect time rather than misread (fact 2), and the log says so.
+- **Destroy-and-create on update** (fact 6) can make moving lights restart denoiser history. If
+  vehicle lights shimmer, the options are: re-send moving lights every other frame, or phase 7 once
+  Remix Plus's bridge forwards `UpdateLightDefinition`. Re-creating in place under the same hash is
+  not an option: it leaks on both bridges, and on Remix Plus the queued erase would remove it.
 - **Bridge traffic.** Each re-sent light is two messages plus its per-frame draw. The budget and
   change thresholds keep this bounded; section 6 step 8 measures it.
 - **Threading.** The harvest writes the registry from the draw path. The engine has no render
