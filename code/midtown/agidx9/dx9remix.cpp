@@ -609,10 +609,19 @@ static const BridgeLayout* IdentifyBridge(const AnyFn (&slots)[kMaxSlots])
 
 void agiDX9RemixApiInit()
 {
-    if (s_init_tried || !PARAM_remixapi.get_or(false))
+    if (s_init_tried)
         return;
 
     s_init_tried = true;
+
+    // Off is the default, so say so: otherwise a game running under Remix with the API switched off
+    // looks exactly like one where the API is broken - no lights, no sky, and nothing in the log.
+    if (!PARAM_remixapi.get_or(false))
+    {
+        Displayf("Remix API: off. Set remixapi = 1 in the [RemixAPI] section of Open1560_RemixAPI.ini (or pass "
+                 "-remixapi) to send lights and drive the Remix Plus sky.");
+        return;
+    }
 
     // The module Direct3DCreate9 came from first. Then the names the bridge client can be loaded
     // under, which covers a chaining proxy: a d3d9.dll that loads Remix behind itself has no Remix
