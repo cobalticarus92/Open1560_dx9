@@ -349,8 +349,8 @@ static Section ParseSectionHeader(const char* file_name, char* header, i32 line_
         section.SectionType = section.Tuning ? Section::Type::Texture : Section::Type::Invalid;
 
         if (!section.Tuning)
-            Warningf("%s:%i: [%s] skipped - no texture name, or more than 64 texture sections", file_name,
-                line_number, name);
+            Warningf("%s:%i: [%s] skipped - no texture name, or more than 64 texture sections", file_name, line_number,
+                name);
 
         return section;
     }
@@ -684,11 +684,12 @@ static void WriteTemplate(std::FILE* out)
         if (!header_written)
         {
             header_written = true;
-            std::fputs("\n; ---------------------------------------------------------------------------------------------\n"
-                       "; Carried over from Open1560-Shaders.ini, which this file replaces, and not set anywhere above.\n"
-                       "; Keys that only fed the retired programmable path are harmless and do nothing.\n"
-                       "; ---------------------------------------------------------------------------------------------\n"
-                       "[Migrated]\n",
+            std::fputs(
+                "\n; ---------------------------------------------------------------------------------------------\n"
+                "; Carried over from Open1560-Shaders.ini, which this file replaces, and not set anywhere above.\n"
+                "; Keys that only fed the retired programmable path are harmless and do nothing.\n"
+                "; ---------------------------------------------------------------------------------------------\n"
+                "[Migrated]\n",
                 out);
         }
 
@@ -740,8 +741,8 @@ void agiDX9LoadRemixConfig()
     }
     else if (LegacyFileExists())
     {
-        Displayf("%s is no longer read - its settings live in %s now. It can be deleted.", kLegacyConfigName,
-            kConfigName);
+        Displayf(
+            "%s is no longer read - its settings live in %s now. It can be deleted.", kLegacyConfigName, kConfigName);
     }
 
     Displayf("Loaded %s (%i settings, %u glow texture sections)", kConfigName, applied, agiGlowTextureTuningCount());

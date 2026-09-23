@@ -49,7 +49,8 @@ define_dummy_symbol(agidx9_dx9remixsky);
 //
 // Nothing here runs unless the Remix API connected through a Remix Plus bridge and -remixsky is on.
 
-static mem::cmd_param PARAM_remixsky {"remixsky", "Drive RTX Remix Plus's physical sky from the race's time and weather"};
+static mem::cmd_param PARAM_remixsky {
+    "remixsky", "Drive RTX Remix Plus's physical sky from the race's time and weather"};
 
 // Which Remix Plus weather preset each of the game's four weathers maps to.
 static mem::cmd_param PARAM_remixsky_clear {"remixskyclear", "Remix Plus weather preset for Clear"};
@@ -57,7 +58,8 @@ static mem::cmd_param PARAM_remixsky_fog {"remixskyfog", "Remix Plus weather pre
 static mem::cmd_param PARAM_remixsky_rain {"remixskyrain", "Remix Plus weather preset for Raining"};
 static mem::cmd_param PARAM_remixsky_snow {"remixskysnow", "Remix Plus weather preset for Snowing"};
 
-static mem::cmd_param PARAM_remixsky_fogmatch {"remixskyfogmatch", "Match Remix fog density to the game's own fog distances"};
+static mem::cmd_param PARAM_remixsky_fogmatch {
+    "remixskyfogmatch", "Match Remix fog density to the game's own fog distances"};
 static mem::cmd_param PARAM_remixsky_fogdensity {"remixskyfogdensity", "Multiplier on matched Remix fog density"};
 
 static mem::cmd_param PARAM_remixsky_precip {
@@ -168,9 +170,9 @@ namespace
     };
 
     constexpr TimePreset kTimes[4] {
-        {"Morning", 18.0f, 95.0f, false, 0.0f, 0.0f, 0.0f}, // low, warm, from the east
-        {"Noon", 74.0f, 195.0f, false, 0.0f, 0.0f, 0.0f},   // near overhead
-        {"Sunset", 9.0f, 268.0f, false, 0.0f, 0.0f, 0.0f},  // very low, from the west
+        {"Morning", 18.0f, 95.0f, false, 0.0f, 0.0f, 0.0f},  // low, warm, from the east
+        {"Noon", 74.0f, 195.0f, false, 0.0f, 0.0f, 0.0f},    // near overhead
+        {"Sunset", 9.0f, 268.0f, false, 0.0f, 0.0f, 0.0f},   // very low, from the west
         {"Night", -18.0f, 205.0f, true, 52.0f, 25.0f, 0.5f}, // sun opposite the moon, below the horizon
     };
 

@@ -28,6 +28,8 @@
 
 // remix_c.h is third-party (MIT, NVIDIA and the Remix Plus contributors), vendored unmodified from
 // Remix Plus (RemixProjGroup/dxvk-remix 9aab34bd, API 0.1000.0) - see dx9remix.h for why that copy.
+// It lives in vendor/remix with the other third-party code, outside code/, which keeps it out of the
+// project's clang-format check: it is someone else's file, and stays byte-identical to theirs.
 // It is kept out of this project's warning level rather than edited: its error-code enum carries
 // HRESULT-style values above INT_MAX, which a strict build flags.
 //
@@ -46,7 +48,7 @@
 #    define REMIX_ALLOW_X86
 #endif
 #define REMIX_WINAPI_NO_LIBRARY_LOADER
-#include "remix_c.h"
+#include "remix/remix_c.h"
 #ifdef __clang__
 #    pragma clang diagnostic pop
 #endif
@@ -339,8 +341,8 @@ static bool ResolveGlow(const agiGlowLight& glow, f32 radius, Candidate& out)
     // else is dynamic only while it is actually moving. Remix Plus uses this to decide whether a light
     // may be put to sleep - a static light that has not changed for a while stops being updated, to
     // keep its denoiser history. Other runtimes ignore the field.
-    out.Dynamic = (kind == agiGlowKind::Vehicle) || (kind == agiGlowKind::Headlight) ||
-        (glow.Velocity.Mag2() > kMoveEpsilonSq);
+    out.Dynamic =
+        (kind == agiGlowKind::Vehicle) || (kind == agiGlowKind::Headlight) || (glow.Velocity.Mag2() > kMoveEpsilonSq);
     out.Slot = -1;
 
     return true;
@@ -515,8 +517,8 @@ namespace
         {"NVIDIA RTX Remix bridge (API 0.5.1)", SlotMask({1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12}), 7, 8, 9, 10, kNoSlot},
         {"Remix Plus bridge (API 0.6.4, a build from before 2026-06-28)",
             SlotMask({1, 2, 3, 5, 8, 9, 11, 12, 13, 18, 19, 30, 31, 33, 34, 36, 40}), 9, 11, 12, 13, 36},
-        {"Remix Plus bridge (API 0.1000.0)",
-            SlotMask({1, 2, 3, 5, 7, 8, 10, 11, 12, 17, 18, 30, 31, 33, 34, 36, 40}), 8, 10, 11, 12, 36},
+        {"Remix Plus bridge (API 0.1000.0)", SlotMask({1, 2, 3, 5, 7, 8, 10, 11, 12, 17, 18, 30, 31, 33, 34, 36, 40}),
+            8, 10, 11, 12, 36},
     };
 
     // The last entry must describe the vendored header itself, and does.
@@ -574,7 +576,8 @@ void agiDX9RemixApiInit()
         if (!module)
             continue;
 
-        initialize = reinterpret_cast<PFN_remixapi_InitializeLibrary>(GetProcAddress(module, "remixapi_InitializeLibrary"));
+        initialize =
+            reinterpret_cast<PFN_remixapi_InitializeLibrary>(GetProcAddress(module, "remixapi_InitializeLibrary"));
 
         if (initialize)
             break;
@@ -840,8 +843,8 @@ void agiDX9RemixApiLogStats(u32 frame)
 
     Displayf("DX9 REMIXAPI: frame=%u live=%u drawn/frame=%.1f | over %u frames: created=%u updated=%u destroyed=%u "
              "over-budget=%u failed=%u",
-        frame, s_live, static_cast<f32>(s_stats.Drawn) / frames, s_stats.Frames, s_stats.Created, s_stats.Updated, s_stats.Destroyed,
-        s_stats.Culled, s_stats.Failed);
+        frame, s_live, static_cast<f32>(s_stats.Drawn) / frames, s_stats.Frames, s_stats.Created, s_stats.Updated,
+        s_stats.Destroyed, s_stats.Culled, s_stats.Failed);
 
     s_stats = {};
 }

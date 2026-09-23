@@ -7,6 +7,7 @@ GLAD_DIR = path.join(VENDOR_DIR, "glad")
 MINIZ_DIR = path.join(VENDOR_DIR, "miniz")
 DX6_DIR = path.join(VENDOR_DIR, "dx6")
 SDL3_DIR = path.join(VENDOR_DIR, "SDL3")
+REMIX_DIR = path.join(VENDOR_DIR, "remix")
 
 function includeMem()
     includedirs { MEM_DIR }
@@ -49,6 +50,11 @@ end
 
 function includeDX6()
     includedirs { path.join(DX6_DIR, "include") }
+end
+
+-- RTX Remix API header (remix/remix_c.h), from Remix Plus - see agidx9/dx9remix.cpp
+function includeRemix()
+    includedirs { REMIX_DIR }
 end
 
 function includeSDL3()

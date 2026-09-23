@@ -2617,7 +2617,8 @@ static void HarvestWorldGlow(
         // space before the world transform, so an offset rides with the car however it turns. The
         // mesh is centred on the vehicle, so "outward" means away from its centre line: one setting
         // moves both tail lights of a pair out to their corners.
-        const agiGlowTuning tuning = agiResolveGlowTuning(texture->Tex.Name, agiClassifyGlowKind(texture->Tex.Name, tint));
+        const agiGlowTuning tuning =
+            agiResolveGlowTuning(texture->Tex.Name, agiClassifyGlowKind(texture->Tex.Name, tint));
 
         if (tuning.HasEnabled && !tuning.Enabled)
             continue;

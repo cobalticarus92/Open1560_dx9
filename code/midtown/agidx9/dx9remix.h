@@ -33,7 +33,8 @@
 //   - A bridge refuses to initialise unless bridge.conf has `exposeRemixApi = True`.
 //   - It ignores the version we pass and copies out its interface table laid out by ITS header.
 //     Three layouts are in circulation, so the table is identified before anything in it is called
-//     - see IdentifyBridge in the .cpp. remix_c.h here is Remix Plus's current header (0.1000.0).
+//     - see IdentifyBridge in the .cpp. vendor/remix/remix/remix_c.h is Remix Plus's current header
+//     (0.1000.0).
 //   - Only lights, materials, meshes, instances and SetConfigVariable are forwarded. Remix Plus also
 //     forwards SetGameValue/GetGameValue; its UpdateLightDefinition and AutoInstancePersistentLights
 //     are bridge stubs that fail, so a 32-bit game cannot use them yet.
