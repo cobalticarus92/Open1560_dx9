@@ -94666,108 +94666,6 @@ loc_44D846:
 ?ComputeLod@aiPedestrianInstance@@UAEHMM@Z ENDP
 
 ALIGN 16
-?Draw@aiPedestrianInstance@@UAIXH@Z PROC PUBLIC
-    push ebp
-    mov ebp, esp
-    sub esp, 38h
-    push ebx
-    mov ebx, ecx
-    push esi
-    mov eax, dword ptr [?TriCount@agiPolySet@@2HA]
-    mov esi, dword ptr [ebx+14h]
-    push edi
-    add esi, 3Ch
-    mov ecx, 0Ch
-    lea edi, [ebp-38h]
-    mov dword ptr [ebp-4], edx
-    rep movsd
-    mov ecx, dword ptr [?BoneScale@@3MA]
-    mov dword ptr [ebp-8], eax
-    push ecx
-    lea ecx, [ebp-38h]
-    call ?Scale@Matrix34@@QAEXM@Z
-    mov ecx, dword ptr [?Active@agiViewport@@1PAV1@A]
-    lea eax, [ebp-38h]
-    push eax
-    mov edx, dword ptr [ecx]
-    call dword ptr [edx+24h]
-    mov esi, dword ptr [ebp-4]
-    cmp esi, 3
-    jz loc_44D8F2
-    fld dword ptr [?BoneScale@@3MA]
-    fcomp qword ptr [dbl_61B5D0]
-    fnstsw ax
-    test ah, 41h
-    jz loc_44D8F2
-    mov ecx, dword ptr [ebx+18h]
-    xor eax, eax
-    mov al, byte ptr [ebx+1Eh]
-    lea edx, [eax+eax*4]
-    mov eax, dword ptr [ecx+4]
-    movsx ecx, word ptr [ebx+1Ch]
-    mov edx, dword ptr [eax+edx*8+1Ch]
-    xor eax, eax
-    mov al, byte ptr [ebx+1Eh]
-    add edx, ecx
-    mov ecx, dword ptr [ebx+18h]
-    push edx
-    lea edx, [eax+eax*4]
-    mov eax, dword ptr [ecx+4]
-    mov ecx, dword ptr [eax+edx*8+18h]
-    mov edx, dword ptr [ebx+20h]
-    mov eax, dword ptr [ebx+18h]
-    push ecx
-    shl edx, 4
-    mov ecx, dword ptr [eax+0Ch]
-    or edx, 1
-    push edx
-    call ?ModelDrawSkel@agiMeshModel@@QAEHIPAVbnAnimation@@H@Z
-    jmp loc_44D935
-
-loc_44D8F2:
-    mov ecx, dword ptr [ebx+18h]
-    xor eax, eax
-    mov al, byte ptr [ebx+1Eh]
-    movsx edi, word ptr [ebx+1Ch]
-    lea edx, [eax+eax*4]
-    mov eax, dword ptr [ecx+4]
-    mov eax, dword ptr [eax+edx*8+14h]
-    mov edx, ecx
-    xor ecx, ecx
-    mov cl, byte ptr [ebx+1Eh]
-    mov edx, dword ptr [edx+4]
-    lea ecx, [ecx+ecx*4]
-    mov ecx, dword ptr [edx+ecx*8+1Ch]
-    mov edx, dword ptr [ebx+20h]
-    add ecx, edi
-    shl edx, 4
-    push ecx
-    mov ecx, dword ptr [?DynamicLighter@mmInstance@@2P6AXPAEPAI1PAVagiMeshSet@@@ZA]
-    or edx, 1
-    push eax
-    push edx
-    push ecx
-    mov ecx, dword ptr [eax]
-    call ?ModelDrawLit@agiMeshModel@@QAEHP6AXPAEPAI1PAVagiMeshSet@@@ZIPAVagiLitAnimation@@H@Z
-
-loc_44D935:
-    mov ecx, dword ptr [ebp-8]
-    inc esi
-    mov dword ptr [ebx+24h], esi
-    mov edx, dword ptr [?TriCount@agiPolySet@@2HA]
-    mov eax, dword ptr [?pedTriCount@@3HA]
-    sub edx, ecx
-    add eax, edx
-    pop edi
-    pop esi
-    mov dword ptr [?pedTriCount@@3HA], eax
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    retn
-?Draw@aiPedestrianInstance@@UAIXH@Z ENDP
-
-ALIGN 16
 ?DrawShadow@aiPedestrianInstance@@UAIXXZ PROC PUBLIC
     push ebp
     mov ebp, esp
@@ -183944,152 +183842,6 @@ loc_493B1E:
     pop ebp
     retn 0Ch
 ??0mmFacadeQuad@@QAE@PAVagiMeshSet@@MM@Z ENDP
-
-ALIGN 16
-?DrawLit@mmFacadeQuad@@QAEXP6AXPAEPAI1PAVagiMeshSet@@@Z2@Z PROC PUBLIC
-    push ebp
-    mov ebp, esp
-    sub esp, 6Ch
-    push ebx
-    mov ebx, dword ptr [ebp+0Ch]
-    push edi
-    mov edi, ecx
-    mov ecx, ebx
-    call ?LockIfResident@agiMeshSet@@QAEHXZ
-    test eax, eax
-    jz loc_493CB1
-    mov eax, dword ptr [ebx]
-    lea ebx, [ebp-6Ch]
-    sub eax, ebx
-    push esi
-    lea ecx, [ebp-68h]
-    lea esi, [ebp-38h]
-    mov edx, edi
-    mov dword ptr [ebp-8], eax
-    mov dword ptr [ebp-4], 4
-    jmp loc_493BAB
-
-loc_493BA8:
-    mov eax, dword ptr [ebp-8]
-
-loc_493BAB:
-    lea eax, [ecx+eax-4]
-    mov ebx, dword ptr [eax]
-    mov dword ptr [ecx-4], ebx
-    mov ebx, dword ptr [eax+4]
-    mov dword ptr [ecx], ebx
-    mov eax, dword ptr [eax+8]
-    mov dword ptr [ecx+4], eax
-    movsx eax, word ptr [edx]
-    mov dword ptr [ebp-0Ch], eax
-    fild dword ptr [ebp-0Ch]
-    movsx eax, word ptr [edx+2]
-    fmul dword ptr [flt_61D040]
-    mov dword ptr [ebp-0Ch], eax
-    fstp dword ptr [esi-4]
-    fild dword ptr [ebp-0Ch]
-    fmul dword ptr [flt_61D040]
-    fstp dword ptr [esi]
-    fld dword ptr [edi+10h]
-    fcomp dword ptr [flt_61D02C]
-    fnstsw ax
-    test ah, 40h
-    jnz loc_493C04
-    fld dword ptr [ecx]
-    fcomp dword ptr [edi+10h]
-    fnstsw ax
-    test ah, 1
-    jz loc_493C04
-    mov eax, dword ptr [edi+10h]
-    mov dword ptr [ecx], eax
-
-loc_493C04:
-    fld dword ptr [edi+14h]
-    fcomp dword ptr [flt_61D02C]
-    fnstsw ax
-    test ah, 40h
-    jnz loc_493C27
-    fld dword ptr [ecx+4]
-    fcomp dword ptr [edi+14h]
-    fnstsw ax
-    test ah, 1
-    jz loc_493C27
-    mov eax, dword ptr [edi+14h]
-    mov dword ptr [ecx+4], eax
-
-loc_493C27:
-    mov eax, dword ptr [ebp-4]
-    add edx, 4
-    add esi, 8
-    add ecx, 0Ch
-    dec eax
-    mov dword ptr [ebp-4], eax
-    jnz loc_493BA8
-    mov esi, dword ptr [ebp+0Ch]
-    lea edx, [ebp-6Ch]
-    mov ecx, dword ptr [esi+14h]
-    push ecx
-    push edx
-    push 1
-    mov ecx, esi
-    call ?Geometry@agiMeshSet@@QAEHIPAVVector3@@PAVVector4@@@Z
-    cmp eax, 0FFh
-    jg loc_493CA1
-    mov eax, dword ptr [ebp+8]
-    test eax, eax
-    jz loc_493C90
-    mov ecx, dword ptr [esi+10h]
-    push esi
-    lea edx, [ebp-1Ch]
-    push ecx
-    push edx
-    push 0
-    call eax
-    add esp, 10h
-    lea eax, [ebp-3Ch]
-    lea ecx, [ebp-1Ch]
-    push 0
-    push eax
-    push ecx
-    mov ecx, esi
-    call ?FirstPass@agiMeshSet@@QAEXPAIPAVVector2@@I@Z
-    mov ecx, esi
-    call ?Unlock@agiMeshSet@@QAEXXZ
-    pop esi
-    pop edi
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    retn 8
-
-loc_493C90:
-    mov eax, dword ptr [esi+10h]
-    lea edx, [ebp-3Ch]
-    push -1
-    push edx
-    push eax
-    mov ecx, esi
-    call ?FirstPass@agiMeshSet@@QAEXPAIPAVVector2@@I@Z
-
-loc_493CA1:
-    mov ecx, esi
-    call ?Unlock@agiMeshSet@@QAEXXZ
-    pop esi
-    pop edi
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    retn 8
-
-loc_493CB1:
-    mov ecx, ebx
-    call ?PageIn@agiMeshSet@@QAEXXZ
-    pop edi
-    pop ebx
-    mov esp, ebp
-    pop ebp
-    retn 8
-?DrawLit@mmFacadeQuad@@QAEXP6AXPAEPAI1PAVagiMeshSet@@@Z2@Z ENDP
 
 ALIGN 16
 ?InitFacade@mmFacadeInstance@@QAEHPADAAVVector3@@1MHABV2@@Z PROC PUBLIC
@@ -459713,9 +459465,6 @@ flt_61B5C8 dd 0BF800000r
 ALIGN 4
 flt_61B5CC dd 000000000r
 
-ALIGN 8
-dbl_61B5D0 dq 03FF8000000000000r
-
 ALIGN 4
 flt_61B5D8 dd 040C90F28r
 
@@ -461851,9 +461600,6 @@ flt_61D038 dd 0447A0000r
 
 ALIGN 4
 flt_61D03C dd 043800000r
-
-ALIGN 4
-flt_61D040 dd 03B800000r
 
 ALIGN 4
 flt_61D044 dd 0BF800000r
@@ -508911,6 +508657,7 @@ EXTERN ?Dot@Matrix44@@QAEXABV1@0@Z:PROC
 EXTERN ?Dot@Vector3@@QAIXABV1@ABVMatrix34@@@Z:PROC
 EXTERN ?DragTimer@@3HA:BYTE
 EXTERN ?Draw@agiMeshSet@@QAEHI@Z:PROC
+EXTERN ?Draw@aiPedestrianInstance@@UAIXH@Z:PROC
 EXTERN ?Draw@asLineSparks@@QAEXXZ:PROC
 EXTERN ?Draw@mmBuildingInstance@@UAIXH@Z:PROC
 EXTERN ?Draw@mmDrawbridgeInstance@@UAIXH@Z:PROC
@@ -508921,6 +508668,7 @@ EXTERN ?DrawCard@agiMeshSet@@SAXAAVVector3@@MIII@Z:PROC
 EXTERN ?DrawColor@agiMeshSet@@QAEHII@Z:PROC
 EXTERN ?DrawGlow@mmInstance@@UAIXXZ:PROC
 EXTERN ?DrawLit@agiMeshSet@@QAEHP6AXPAEPAI1PAV1@@ZI1@Z:PROC
+EXTERN ?DrawLit@mmFacadeQuad@@QAEXP6AXPAEPAI1PAVagiMeshSet@@@Z2@Z:PROC
 EXTERN ?DrawLitEnv@agiMeshSet@@QAEXP6AXPAEPAI1PAV1@@ZPAVagiTexDef@@AAVMatrix34@@I@Z:PROC
 EXTERN ?DrawLitSph@agiMeshSet@@QAEXP6AXPAEPAI1PAV1@@ZPAVagiTexDef@@I@Z:PROC
 EXTERN ?DrawNormals@agiMeshSet@@QAEXAAVVector3@@@Z:PROC
@@ -509172,7 +508920,6 @@ EXTERN ?MeshSetSetCount@mmInstance@@2HA:BYTE
 EXTERN ?MeshSetTable@mmInstance@@2PAUMeshSetTableEntry@1@A:BYTE
 EXTERN ?MirrorDist@@3MA:DWORD
 EXTERN ?MirrorMode@agiMeshSet@@2HA:BYTE
-EXTERN ?ModelDrawLit@agiMeshModel@@QAEHP6AXPAEPAI1PAVagiMeshSet@@@ZIPAVagiLitAnimation@@H@Z:PROC
 EXTERN ?MouseAction@MenuManager@@QAEPAVuiWidget@@HMM@Z:PROC
 EXTERN ?MouseAction@UIMenu@@QAEXTeqEvent@@@Z:PROC
 EXTERN ?MoverCount@@3HA:BYTE

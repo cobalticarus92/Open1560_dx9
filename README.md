@@ -92,6 +92,7 @@ with their descriptions. Boolean switches take `0` or `1`, and default to off un
 | `-d3d9specular` | off | Add a specular term to the static city lighting rig. The original rig has no specular concept at all. |
 | `-d3d9nofx` | off | Skip the chrome and ground-map second passes. They duplicate geometry, which matters for a Remix capture, and cost real visuals otherwise. |
 | `-d3d9depthbias <f>` | 0.0 | Depth bias for hardware-transformed geometry. Should no longer be needed. |
+| `-d3d9worldfog <0/1>` | off under Remix, on otherwise | Fixed-function fog on world draws. Remix rebuilds this state as its own volumetric fog, which washes the city out white, so it is off when the Remix bridge is detected. Pass `0` for a Remix install that is not detected, or `1` to feed Remix the fog anyway. |
 | `-noskin` | off | Disable hardware matrix-palette skinning; submit one draw per bone instead. |
 | `-ffperpixel` | off | Per-pixel Blinn-Phong for the sun, through the texture-blending unit. Costs extra passes and is **not Remix compatible**. |
 | `-ffperpixelsteps <0-6>` | 4 | Blinn exponent for the above, as squaring steps (2^n). |
@@ -108,6 +109,7 @@ These act on the world-space path, so they apply to this backend only.
 | `-flatnormals` | off | Shade from facet geometry, ignoring stored vertex normals. |
 | `-nativecpucull` | off | Cull backfacing facets on the CPU. **Breaks Remix hash stability.** |
 | `-pedskin` | off | Skin pedestrians on the CPU. **Breaks Remix hash stability.** |
+| `-pedsticks` | off | Draw distant pedestrians as the original's stick figures (one screen-space ribbon per bone) instead of the full skinned mesh. **Invisible to Remix** - by default every pedestrian draws as a world-space mesh at every distance. |
 | `-reflectamount <f>` | 0.35 | Vehicle sphere-map reflection strength. |
 | `-reflectfresnelbias <f>` | 1.0 | Vehicle reflection fresnel bias. |
 | `-reflectfresnelscale <f>` | 0.0 | Vehicle reflection fresnel scale. |
@@ -125,6 +127,8 @@ These act on the world-space path, so they apply to this backend only.
 | `-d3d9legacydepth` | off | Fold `agiMeshSet::DepthScale`/`DepthOffset` back into the projection matrix. **Breaks Remix** - it produces a frustum with no far plane, which is why it is not the default. |
 | `-d3d9rhview` | off | Hand Remix a right-handed view matrix, folding the Z flip into the projection instead. Clip space is identical either way, so this is an A/B switch rather than a rendering change. |
 | `-d3d9identityproj` | off | Reset `PROJECTION` to identity after world draws. **Breaks Remix.** |
+| `-d3d9nostatecache` | off | Send every render state, transform, texture binding, light and material to the device even when unchanged. Diagnostic: if the picture changes with it on, something is writing the device behind the state filter. |
+| `-d3d9attribution` | off | Name screen draws by texture in the periodic census log (dropped, submitted, in-scene). Costs a string search per screen draw, so it is off unless you are chasing a missing or CPU-pretransformed surface. |
 
 **Inert - the unwired programmable path**
 

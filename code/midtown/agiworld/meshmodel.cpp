@@ -173,13 +173,13 @@ static bool ModelFacetsAreGroupCoherent(agiMeshModel* model)
 // and submit, exactly as agiMeshSet::DrawLit does for a static mesh.
 i32 agiMeshModel::ModelDrawLit(agiMeshLighter lighter, u32 flags, agiLitAnimation* anim, i32 frame)
 {
-    // Note on AGI_QUALITY_LOW: mmCullCity::fix_lighting() clears mmInstance::DynamicLighter
-    // outright at that setting, so pedestrians arrive here with a null lighter and take ModelDraw()
-    // below - the CPU path - however the native mask is set. That is faithful to the original (the
-    // engine is being told not to light them at all), but it does mean the world-space path for
-    // pedestrians is only reachable at MEDIUM and above.
-    if (!lighter)
-        return ModelDraw(flags, anim, frame);
+    // AGI_QUALITY_LOW: mmCullCity::fix_lighting() clears mmInstance::DynamicLighter outright at
+    // that setting, so pedestrians arrive here with a null lighter. That used to send them straight
+    // to ModelDraw(), the CPU path, whatever the native mask said - so at LOW lighting no pedestrian
+    // reached RTX Remix at all. The engine is asking for them unlit, not for them in screen space:
+    // the world-space paths below take them with hardware lighting off, which is exactly what
+    // ModelDraw() shows, and only the CPU fallback at the bottom still needs ModelDraw() itself.
+    const bool unlit = (lighter == nullptr);
 
     bnAnimation* animation = anim->Anim;
 
@@ -316,8 +316,7 @@ i32 agiMeshModel::ModelDrawLit(agiMeshLighter lighter, u32 flags, agiLitAnimatio
 
                 // static_lighting = false for the same reason every other path here gives: a
                 // pedestrian is a mover, lit by the dynamic rig.
-                any_drawn |=
-                    DrawNativeTransform(flags, /*static_lighting=*/false, nullptr, base_colors, /*unlit=*/false, &skin);
+                any_drawn |= DrawNativeTransform(flags, /*static_lighting=*/false, nullptr, base_colors, unlit, &skin);
 
                 first_bone = end_bone;
                 first_vertex = end_vertex;
@@ -352,7 +351,7 @@ i32 agiMeshModel::ModelDrawLit(agiMeshLighter lighter, u32 flags, agiLitAnimatio
         // static_lighting = false: a pedestrian is a mover, lit by the dynamic rig, not by the
         // city's fixed sun/fill/fill. That is the same choice DrawLit() makes via
         // IsStaticCityLighter(), which never matches the ped lighter.
-        const b32 drawn = DrawNativeTransform(flags, /*static_lighting=*/false, nullptr, base_colors);
+        const b32 drawn = DrawNativeTransform(flags, /*static_lighting=*/false, nullptr, base_colors, unlit);
 
         Vertices = saved_vertices;
         Normals = saved_normals;
@@ -364,6 +363,10 @@ i32 agiMeshModel::ModelDrawLit(agiMeshLighter lighter, u32 flags, agiLitAnimatio
         // returns false for a mesh it cannot express, and a missing pedestrian is worse than an
         // unlit one.
     }
+
+    // No lighter: the original's own unlit draw, exactly as it always did at LOW.
+    if (unlit)
+        return ModelDraw(flags, anim, frame);
 
     // --- Original CPU path -----------------------------------------------------------------------
     // Unchanged in behaviour from the assembly this replaces: skin and project via the closed

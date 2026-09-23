@@ -146,6 +146,49 @@ static mem::cmd_param PARAM_d3d9_rhview {
 mem::cmd_param PARAM_d3d9_legacydepth {
     "d3d9legacydepth", "Fold agiMeshSet::DepthScale/DepthOffset into PROJECTION (breaks RTX Remix)"};
 
+// -d3d9worldfog: whether hardware-transformed (world) draws carry fixed-function fog.
+//
+// RTX Remix does not ignore D3D9 fog. It reads FOGENABLE/FOGTABLEMODE/FOGSTART/FOGEND/FOGCOLOR off
+// the draws it path traces and rebuilds them as its own volumetric fog. Once 2c74846 put
+// D3DFOG_LINEAR back on world draws (start 1, end mmCullCity's FogEnd, colour SkyColor), Remix
+// received a real fog ramp for the first time, and in its units that ramp closes within a few metres
+// of the camera. The whole scene comes out in fog colour, which is the reported "cars and road look
+// white". 72a6dba, the last build reported correct under Remix, sent FOGTABLEMODE = FOGVERTEXMODE =
+// NONE on those draws, which Remix reads as no fog at all.
+//
+// Plain D3D9 needs that fog, because rasterised fog is the only distance cue the city has. So the
+// default follows the device: off when the Remix bridge is detected, on otherwise. -d3d9worldfog 1
+// forces it on, for tuning Remix's own fog. -d3d9worldfog 0 forces it off, for a Remix install that
+// agiDX9RemixBridgeActive() does not recognise.
+static mem::cmd_param PARAM_d3d9_worldfog {
+    "d3d9worldfog", "Fixed-function fog on world draws (default: off under RTX Remix, on otherwise)"};
+
+static bool agiDX9WorldFogWanted()
+{
+    if (bool forced = false; PARAM_d3d9_worldfog.get(forced))
+        return forced;
+
+    return !agiDX9RemixBridgeActive();
+}
+
+// -d3d9nostatecache: send every render state, stage state, transform, FVF and stage-0 binding to
+// the device, even when the value has not changed. This turns off the filter in front of
+// agiDX9Rasterizer (agiDX9WorldStateCache).
+//
+// It is a diagnostic switch. The filter only drops a call the device already agrees with, so
+// turning it off should change nothing but speed. If the picture changes with it on, some writer
+// is reaching the device without going through the filter or invalidating it, and that is a bug to
+// find. Read once, at the first write.
+static mem::cmd_param PARAM_d3d9_nostatecache {
+    "d3d9nostatecache", "Send every device state write, even unchanged ones (diagnostic)"};
+
+static bool agiDX9StateCacheEnabled()
+{
+    static const bool enabled = !PARAM_d3d9_nostatecache.get_or(false);
+
+    return enabled;
+}
+
 static u32 ImmPrimType = D3DPT_TRIANGLELIST;
 
 static agiVtx* ImmVtxBase = nullptr;
@@ -376,7 +419,13 @@ static void DrawMaterialFxPass(IDirect3DDevice9* device, IDirect3DTexture9* text
     // behind them. MeshWorld()'s own restore block does not cover ZWrite, so it has to happen here.
     device->SetRenderState(D3DRS_ZWRITEENABLE, agiLastState.ZWrite ? TRUE : FALSE);
 
-    agiLastState.Texture = nullptr;
+    // agiLastState.Texture is deliberately left alone. This used to null it, which made
+    // agiLastState say "nothing bound" while agiCurState still named the texture. FlushState() only
+    // looks at agiLastState when agiCurState has been touched, so the next screen draw that wanted
+    // the same state skipped the rebind, found current_texture_ null with a textured environment,
+    // and was dropped by DrawMesh()'s null-texture guard. The device's stage 0 is put back from
+    // agiLastState by RestoreStateAfterWorldDraw() at the end of the world run, through a cache the
+    // caller has invalidated, so there is nothing to force here.
 }
 
 // `view` is the engine's own view matrix, which BuildVehicleReflectionVertices needs because it
@@ -444,7 +493,7 @@ static void DrawVehicleReflectionPass(IDirect3DDevice9* device, agiWorldVtx* ver
             device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
             device->SetRenderState(D3DRS_ZWRITEENABLE, agiLastState.ZWrite ? TRUE : FALSE);
 
-            agiLastState.Texture = nullptr;
+            // agiLastState.Texture is left alone - see the note at the end of DrawMaterialFxPass().
             return;
         }
     }
@@ -591,7 +640,8 @@ static void WorldSetRenderState(IDirect3DDevice9* device, D3DRENDERSTATETYPE sta
 
     if (index < agiDX9WorldStateCache::kRenderStates)
     {
-        if (g_WorldCache.RenderStateKnown[index] && (g_WorldCache.RenderState[index] == value))
+        if (agiDX9StateCacheEnabled() && g_WorldCache.RenderStateKnown[index] &&
+            (g_WorldCache.RenderState[index] == value))
             return;
 
         g_WorldCache.RenderState[index] = value;
@@ -616,7 +666,7 @@ static void WorldSetTexture(IDirect3DDevice9* device, DWORD stage, IDirect3DText
 {
     if (stage < agiDX9WorldStateCache::kStages)
     {
-        if (g_WorldCache.TextureKnown[stage] && (g_WorldCache.Texture[stage] == texture))
+        if (agiDX9StateCacheEnabled() && g_WorldCache.TextureKnown[stage] && (g_WorldCache.Texture[stage] == texture))
             return;
 
         g_WorldCache.Texture[stage] = texture;
@@ -641,7 +691,8 @@ static void WorldSetTextureStageState(IDirect3DDevice9* device, DWORD stage, D3D
 
     if ((stage < agiDX9WorldStateCache::kStages) && (index < agiDX9WorldStateCache::kStageStates))
     {
-        if (g_WorldCache.StageStateKnown[stage][index] && (g_WorldCache.StageState[stage][index] == value))
+        if (agiDX9StateCacheEnabled() && g_WorldCache.StageStateKnown[stage][index] &&
+            (g_WorldCache.StageState[stage][index] == value))
             return;
 
         g_WorldCache.StageState[stage][index] = value;
@@ -681,7 +732,7 @@ static void WorldSetTransform(IDirect3DDevice9* device, D3DTRANSFORMSTATETYPE st
 
     if (cached)
     {
-        if (*known && (std::memcmp(cached, &matrix, sizeof(matrix)) == 0))
+        if (agiDX9StateCacheEnabled() && *known && (std::memcmp(cached, &matrix, sizeof(matrix)) == 0))
             return;
 
         *cached = matrix;
@@ -693,7 +744,7 @@ static void WorldSetTransform(IDirect3DDevice9* device, D3DTRANSFORMSTATETYPE st
 
 static void WorldSetFVF(IDirect3DDevice9* device, DWORD fvf)
 {
-    if (g_WorldCache.FvfKnown && (g_WorldCache.Fvf == fvf))
+    if (agiDX9StateCacheEnabled() && g_WorldCache.FvfKnown && (g_WorldCache.Fvf == fvf))
         return;
 
     g_WorldCache.Fvf = fvf;
@@ -1350,6 +1401,24 @@ static agiDX9NameTally g_ScreenDroppedNoTex {};
 // here - reports the busiest and then a "(+more)".
 static agiDX9NameTally g_ScreenDrawsBy {};
 
+// -d3d9attribution: the per-texture screen-draw tallies above (dropped, submitted, in-scene).
+//
+// Off by default, because they cost something on every screen draw. Each one is a linear strcmp
+// search over up to 24 names, and DrawMesh() runs up to three of them per call - for every HUD
+// element, glyph run, minimap quad and in-scene sprite - only to feed one log line every 120
+// frames. They answer specific questions (is a menu image dropped, submitted, or never asked for;
+// which surfaces are still CPU-pretransformed), so they are switched on when those questions are
+// being asked. The census totals stay unconditional; they are plain counters.
+static mem::cmd_param PARAM_d3d9_attribution {
+    "d3d9attribution", "Name screen draws by texture in the periodic DX9 census log (diagnostic)"};
+
+static bool agiDX9AttributionEnabled()
+{
+    static const bool enabled = PARAM_d3d9_attribution.get_or(false);
+
+    return enabled;
+}
+
 static void agiDX9TallyAdd(agiDX9NameTally& tally, const char* name)
 {
     if (!name || !*name)
@@ -1631,9 +1700,12 @@ void agiDX9Rasterizer::DrawMesh(u32 prim_type, agiVtx* vertices, i32 vertex_coun
     {
         // Name what was thrown away. See g_ScreenDroppedNoTex - a dropped draw is invisible to every
         // other counter in the census, so missing art used to leave no evidence anywhere.
-        agiDX9TexDef* wanted = static_cast<agiDX9TexDef*>(agiCurState.GetTexture());
+        if (agiDX9AttributionEnabled())
+        {
+            agiDX9TexDef* wanted = static_cast<agiDX9TexDef*>(agiCurState.GetTexture());
 
-        agiDX9TallyAdd(g_ScreenDroppedNoTex, wanted ? wanted->Tex.Name : nullptr);
+            agiDX9TallyAdd(g_ScreenDroppedNoTex, wanted ? wanted->Tex.Name : nullptr);
+        }
 
         return;
     }
@@ -1644,6 +1716,7 @@ void agiDX9Rasterizer::DrawMesh(u32 prim_type, agiVtx* vertices, i32 vertex_coun
     // Name what does reach the device. See g_ScreenDrawsBy - the counterpart to the dropped tally
     // above, and the only way to tell a menu image that renders black from one that was never
     // submitted at all.
+    if (agiDX9AttributionEnabled())
     {
         agiDX9TexDef* submitted = static_cast<agiDX9TexDef*>(agiCurState.GetTexture());
 
@@ -1670,9 +1743,12 @@ void agiDX9Rasterizer::DrawMesh(u32 prim_type, agiVtx* vertices, i32 vertex_coun
             // everything around them does: the tint is applied in MeshWorld, which these never
             // reach. The count alone cannot say which surfaces they are, and most of what still
             // draws is closed assembly, so a source audit cannot either. The texture name can.
-            agiDX9TexDef* screen_tex = static_cast<agiDX9TexDef*>(agiCurState.GetTexture());
+            if (agiDX9AttributionEnabled())
+            {
+                agiDX9TexDef* screen_tex = static_cast<agiDX9TexDef*>(agiCurState.GetTexture());
 
-            agiDX9TallyAdd(g_ScreenInSceneBy, screen_tex ? screen_tex->Tex.Name : nullptr);
+                agiDX9TallyAdd(g_ScreenInSceneBy, screen_tex ? screen_tex->Tex.Name : nullptr);
+            }
         }
     }
 
@@ -1978,7 +2054,8 @@ static void MirroredSetLight(IDirect3DDevice9* device, DWORD index, const D3DLIG
     if (index >= kMaxWorldLights)
         return;
 
-    if (g_LightMirror.LightKnown[index] && (std::memcmp(&g_LightMirror.Lights[index], &light, sizeof(light)) == 0))
+    if (agiDX9StateCacheEnabled() && g_LightMirror.LightKnown[index] &&
+        (std::memcmp(&g_LightMirror.Lights[index], &light, sizeof(light)) == 0))
         return;
 
     g_LightMirror.Lights[index] = light;
@@ -1992,7 +2069,7 @@ static void MirroredLightEnable(IDirect3DDevice9* device, DWORD index, bool enab
     if (index >= kMaxWorldLights)
         return;
 
-    if (g_LightMirror.EnabledKnown[index] && (g_LightMirror.Enabled[index] == enable))
+    if (agiDX9StateCacheEnabled() && g_LightMirror.EnabledKnown[index] && (g_LightMirror.Enabled[index] == enable))
         return;
 
     g_LightMirror.Enabled[index] = enable;
@@ -2003,7 +2080,8 @@ static void MirroredLightEnable(IDirect3DDevice9* device, DWORD index, bool enab
 
 static void MirroredSetMaterial(IDirect3DDevice9* device, const D3DMATERIAL9& material)
 {
-    if (g_LightMirror.MaterialKnown && (std::memcmp(&g_LightMirror.Material, &material, sizeof(material)) == 0))
+    if (agiDX9StateCacheEnabled() && g_LightMirror.MaterialKnown &&
+        (std::memcmp(&g_LightMirror.Material, &material, sizeof(material)) == 0))
         return;
 
     g_LightMirror.Material = material;
@@ -2330,6 +2408,16 @@ void agiDX9Rasterizer::RestoreStateAfterWorldDraw(bool remap_vertex_fog)
         ApplyBlendSet(device, agiLastState.BlendSet);
 
     agiDX9TexDef* restore_tex = static_cast<agiDX9TexDef*>(agiLastState.Texture);
+
+    // agiRendStateStruct::Reset() fills agiLastState with 0xFF bytes, and a device Reset calls it
+    // (agiDX9OnDeviceReset, and EndFrame after the -d3d9scenetarget blit). If a world run was still
+    // pending when that happened - the last draw before a lost-device recovery was a world draw -
+    // this pointer is 0xFFFFFFFF and GetHandle() below would crash on it. There is nothing
+    // meaningful to restore from a poisoned record, so bind nothing and let the next FlushState()
+    // re-issue from scratch.
+    if (reinterpret_cast<std::uintptr_t>(restore_tex) == ~static_cast<std::uintptr_t>(0))
+        restore_tex = nullptr;
+
     IDirect3DTexture9* restore_handle = restore_tex ? restore_tex->GetHandle() : nullptr;
 
     WorldSetTexture(device, 0, restore_handle);
@@ -2862,6 +2950,12 @@ bool agiDX9Rasterizer::MeshWorld(agiWorldVtx* vertices, i32 vertex_count, u16* i
                 fog_enable = false;
         }
     }
+
+    // Under RTX Remix, world draws carry no fixed-function fog unless asked for. See
+    // agiDX9WorldFogWanted() - Remix turns this state into its own volumetric fog and the city
+    // comes out washed white.
+    if (!agiDX9WorldFogWanted())
+        fog_enable = false;
 
     WorldSetRenderState(device, D3DRS_FOGENABLE, fog_enable ? TRUE : FALSE);
 

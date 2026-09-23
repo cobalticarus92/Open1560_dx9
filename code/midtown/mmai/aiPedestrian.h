@@ -159,7 +159,7 @@ public:
     ARTS_IMPORT i32 ComputeLod(f32 arg1, f32 arg2) override;
 
     // ?Draw@aiPedestrianInstance@@UAIXH@Z | inline
-    ARTS_IMPORT void ARTS_FASTCALL Draw(i32 arg1) override;
+    ARTS_EXPORT void ARTS_FASTCALL Draw(i32 lod) override;
 
     // ?DrawShadow@aiPedestrianInstance@@UAIXXZ | inline
     ARTS_IMPORT void ARTS_FASTCALL DrawShadow() override;

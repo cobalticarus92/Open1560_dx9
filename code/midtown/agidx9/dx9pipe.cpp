@@ -433,6 +433,12 @@ void agiDX9Pipeline::EndFrame()
         // And behind agiDX9Rasterizer's render-state cache too, which answers for the device on the
         // basis that every write inside the rasterizer goes through it. This one did not.
         agiDX9InvalidateStateCache();
+
+        // The blit also left stage 0 at POINT/CLAMP. The texture sampler mirror still holds the
+        // filter and address modes of the last world texture, so without this it would skip the
+        // writes that put them back, and the next frame would sample every texture with the
+        // blit's settings.
+        agiDX9InvalidateSamplerCache();
     }
 
     if (ScreenShotRequested())
