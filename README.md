@@ -155,6 +155,22 @@ does and does not forward to a 32-bit game, and the phases still to come are in
 | `-glowreachscale <f>`, `-glowreachmin <f>` | 14, 20 | Convert a flare's drawn size into how far it throws. Brightness goes with the square of this. |
 | `-glowdebug` | off | Log each glow texture as it is first harvested. |
 
+**RTX Remix Plus sky.** On Remix Plus, the race's time of day and weather also drive its physical
+sky ("Numos"): the sun's position, a moon and stars at night, volumetric clouds, and a weather
+preset per game weather, with fog density matched to the game's own and lightning fired on the
+game's thunder. The game's own sky dome is hidden through its Textured Sky option while this runs,
+and restored afterwards. See [section 9 of the plan](docs/remix_api_plan.md#9-the-remix-plus-sky-phase-8).
+
+| Switch | Default | Effect |
+| --- | --- | --- |
+| `-remixsky <0/1>` | 1 | Drive the Remix Plus sky from the race settings (needs `-remixapi`). |
+| `-remixskyclear`, `-remixskyfog`, `-remixskyrain`, `-remixskysnow` | `clear`, `foggy`, `rainstorm`, `snow` | Weather preset used for each game weather. |
+| `-remixskyfogmatch <0/1>` | 1 | Set each preset's fog density from the game's own fog distances. |
+| `-remixskyfogdensity <f>` | 1.0 | Multiplier on that matched density. |
+| `-remixlightningsync <0/1>` | 1 | Lightning on the game's thunder instead of at random. |
+| `-remixprecipitation <0/1>` | 0 | Remix Plus's own rain and snow. Hide the game's particle textures with Remix's texture tagging if you turn this on. |
+| `-remixsunrotation <f>` | 0 | Degrees added to the sun and moon azimuth. |
+
 A census line, `DX9 REMIXAPI`, reports live lights and how many were created, re-sent and destroyed
 every 120 frames.
 

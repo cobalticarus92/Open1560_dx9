@@ -61,5 +61,11 @@ void agiDX9RemixApiReleaseAll();
 // call could not be sent. The runtime ignores keys it does not know.
 bool agiDX9RemixApiSetConfig(const char* key, const char* value);
 
+// Remix Plus's game-value channel (SetGameValue). Its sky and weather system is driven through it -
+// see dx9remixsky.h. HasGameValues is false on NVIDIA's bridge, which does not forward it. Each call
+// is a blocking round trip to the bridge server, so this is for occasional state, not per frame.
+bool agiDX9RemixApiHasGameValues();
+bool agiDX9RemixApiSetGameValue(const char* key, const char* value);
+
 // One census line, and resets the windowed counters. Called from the pipeline's 120-frame census.
 void agiDX9RemixApiLogStats(u32 frame);

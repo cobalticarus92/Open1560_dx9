@@ -5,7 +5,8 @@ Remix API. It covers what has been built, what the bridge allows, and the phases
 [remix_api_data_sources.md](remix_api_data_sources.md) is the companion document: it records where in
 the engine each kind of data lives. This one records how that data reaches the runtime.
 
-The sun and moon are deliberately out of scope for now.
+Section 9 covers the sky: Remix Plus's physical sky and weather presets, driven by the race's time
+of day and weather.
 
 ---
 
@@ -21,6 +22,7 @@ The sun and moon are deliberately out of scope for now.
 | 5 | The flare sprites themselves: what Remix should do with the glow cards | Planned |
 | 6 | Lightning as a scene-wide light burst | Planned |
 | 7 | Update lights in place, once a bridge forwards it | Waiting on Remix Plus's bridge |
+| 8 | Sky, weather, sun, moon and lightning from the race settings (Remix Plus) | **Done** - needs in-game check (section 9) |
 
 Code: `code/midtown/agidx9/dx9remix.{h,cpp}`, with the harvest in `agiworld/meshrend.cpp`
 (billboards) and `agidx9/dx9rsys.cpp` (glow meshes).
@@ -352,13 +354,6 @@ stubs both today (fact 4). When a Remix Plus bridge forwards them:
 - Optionally drop the per-light `DrawLightInstance` loop for one `AutoInstancePersistentLights`
   call, if persistent registration is also forwarded. Measure first: per-light draws are cheap.
 
-### Possible later: weather through `SetGameValue` (Remix Plus)
-
-Remix Plus's bridge does forward `SetGameValue`, and its sky system reads a `__weather.*`
-convention (`docs/RemixSkyAPI.md` in Remix Plus). `MMSTATE.Weather` (sun, fog, rain, snow) could
-drive it. This overlaps the sun and moon work, which is out of scope for now, and each call is a
-blocking round trip to the server, so it would be set once per race, not per frame.
-
 ### Possible later: materials
 
 `CreateMaterial` and `CreateMesh` are forwarded, but API materials only apply to API meshes. The
@@ -385,3 +380,136 @@ remember fact 3: the material structs differ between the bridges' headers.
 - **Glow textures loaded before the API connects** have no colour grid, and their lights fall back to
   the vertex tint. The API connects in the first `BeginGfx`, before any city texture exists, so this
   only affects the front end's own glows.
+
+---
+
+## 9. The Remix Plus sky (phase 8)
+
+Code: `agidx9/dx9remixsky.{h,cpp}`, fed by `agiworld/skyenv.h`, which `mmCullCity` fills.
+
+### 9.1 What Numos is
+
+With `rtx.skyMode = 1` ("Numos"), Remix Plus replaces the rasterised skybox with a physical sky:
+Hillaire atmospheric scattering, Nubis-style volumetric clouds that cast shadows on the city, stars
+and up to four moons. The sun is a real distant light, so it lights and shadows the city the same
+way the glow lights do. It has two controls, both reachable through the 32-bit bridge:
+
+- **`rtx.*` options** (`SetConfigVariable`): sun elevation and rotation, moons, stars, and every
+  per-preset weather value.
+- **Game values** (`SetGameValue`): `__weather.target` names one of twelve weather presets
+  (`clear`, `partlyCloudy`, `overcast`, `hazy`, `foggy`, `drizzle`, `rainstorm`, `thunderstorm`,
+  `snow`, `blizzard`, `sandstorm`, `smoggy`). A blender crossfades 63 cloud, atmosphere, fog and
+  precipitation values toward it and holds them, with slow cloud drift on top.
+
+The game-value channel only exists on Remix Plus's bridge, so on NVIDIA's this does nothing, and
+says so once in the log.
+
+### 9.2 How the race maps onto it
+
+Pushed once when a race's city is loaded, and again only if the time or weather changes.
+
+| Game | Remix Plus |
+|---|---|
+| Morning | sun 18 deg, azimuth 95 (east), low and warm |
+| Noon | sun 74 deg, azimuth 195 |
+| Sunset | sun 9 deg, azimuth 268 (west): Numos reddens it on its own |
+| Night | sun -18 deg (fully dark sky), moon 0 full at 52 deg / azimuth 25, stars on |
+| Clear | `clear` preset |
+| Foggy | `foggy` |
+| Raining | `rainstorm`, with lightning on the game's thunder |
+| Snowing | `snow` |
+
+- **Sun.** The authored table the old programmable path was tuned with, not the engine's own sun:
+  `fix_sun()` only ever sets an elevation (its azimuth global is written once, to 0) and has no case
+  for Night. Azimuth 0 = +Z toward +X is the same convention Remix Plus uses for a Y-up world, so
+  it goes across unchanged. `-remixsunrotation` turns the whole sky if the city's orientation calls
+  for it.
+- **Night** gets a real night sky instead of the old stand-in (a dim, high "sun"): the sun goes
+  below the horizon, moon 0 takes the old moonlight direction, and stars come up.
+- **Rain is `rainstorm`, not `thunderstorm`.** The game's rain has thunder, but it is its most
+  lightly fogged weather (FogEnd 500). `thunderstorm` would be near-black with 60 m visibility.
+- **Each mapping is a setting** (`remixskyclear`, `remixskyfog`, `remixskyrain`, `remixskysnow`).
+
+### 9.3 Fog matched to the game
+
+Remix Plus's presets are tuned one at a time, and disagree with the game about which weather is
+thickest. Its snow is about ten times thinner than its fog, and its rain is thicker than its fog.
+The game (`mmEnvSetup`, `mmcity/cullcity.cpp`) fogs Fog and Snow alike at 200 units, Rain at 500,
+and Fog at night at 300.
+
+So each preset's fog extinction (`-ln(transmittanceColor) / transmittanceMeasurementDistance`) is
+set from the game's own ratio, anchored on `foggy` as shipped, which stands for the game's daytime
+Fog:
+
+| | as shipped | matched (day) | matched (night) |
+|---|---|---|---|
+| `foggy` | 80 m | 80 m | 120 m |
+| `rainstorm` | 100 m | 402 m | 402 m |
+| `snow` | 250 m | 26 m | 26 m |
+| `clear` | 1000 m | unchanged (the game has no fog) | unchanged |
+
+The value written is the preset's `transmittanceMeasurementDistanceMeters`. Its transmittance
+colour stays as authored, and the distance is chosen to give the matched extinction.
+`-remixskyfogdensity` scales all of it; `-remixskyfogmatch 0` leaves the presets as shipped.
+
+### 9.4 The game's sky dome is switched off
+
+Under Numos, Remix only leaves a draw out of the scene if it is categorised as sky, and MM1's sky
+dome is not unless its textures have been tagged. Left in, it is a textured shell between the camera
+and the physical sky, and between the city and the sun.
+
+The game already has a switch for exactly this: its **Textured Sky** graphics option
+(`agiRQ.TexturedSky`). With it off, `asRenderWeb::Update` skips the dome and clears the screen
+instead, which Remix ignores. The sky driver turns it off while it drives the sky and gives the
+player's setting back when the race ends. Nothing needs tagging.
+
+### 9.5 Lightning on the game's thunder
+
+The game's rain plays thunder through `mmRainAudio`, which also raises `mmSky::DoFlash` for a
+one-frame sky flash. `mmCullCity::Cull` now counts those claps into `agiSkyEnv.ThunderCount`. With
+the dome off, nothing else clears the flag, so `Cull` clears it (`mmSky::ClearFlash`).
+
+Remix Plus has no call to fire a strike: its Test Strike button is dev-menu only. But it rolls a
+fresh chance every frame at the target preset's `lightningStrikesPerMinute`, and the blender re-reads
+the target preset every frame. So the preset's own random rate is set to 0, and on each clap the rate
+is raised to certain for one frame, then dropped back. The runtime's flicker, restrikes and cloud
+lighting do the rest, and the flash lands with the thunder. `-remixlightningsync 0` restores the
+preset's own random lightning.
+
+This is the least certain part: it depends on the rate change taking effect within a frame or
+two. If storms show no lightning at all, turn the sync off and report it.
+
+### 9.6 Rain and snow particles
+
+The game draws its own rain and snow (`asParticles`, from `mmCullCity`'s birth rules) as
+world-space quads, which Remix already sees and path-traces. Remix Plus's built-in precipitation
+would double them, so it is **off** by default (`rtx.weather.precipitation.enable = False`).
+
+`-remixprecipitation 1` uses Remix Plus's instead. Its drops stop under roofs and bridges, and are
+lit by the sky. Then hide the game's own rain and snow textures with Remix's texture tagging
+(Ignore), or the rain falls twice.
+
+### 9.7 Remix Plus documentation that disagrees with its source
+
+Both of these are silent failures, because an unknown key is simply ignored:
+
+- **Preset keys** are `rtx.weather.preset.<preset>.<preset>_<field>`, with the preset name twice
+  (`WEATHER_PRESET_RTX_OPTION_FOR` in `rtx_weather.h`). `RemixSkyAPI.md`'s example leaves out the
+  second one.
+- **Moon keys** changed in Remix Plus's 2026-08-26 refactor (`196a05b5`): `moon0.enabled0` before,
+  `moon0.enabled` after. `RemixSkyAPI.md` and `RtxOptions.md` still show the old form. Both are
+  sent, so either build works.
+
+### 9.8 Checklist
+
+1. The log says `Remix sky: <time>, <weather> -> preset '<name>'` at race start, and for a
+   fogged weather a second line with the matched distance.
+2. No textured dome: the physical sky shows, with clouds and the sun where the table puts it. At
+   Sunset it should be low in the west, reddened.
+3. Shadows: building shadows fall away from the sun. If the whole sky looks rotated against the
+   city, adjust `remixsunrotation`.
+4. Night: dark sky, stars, a full moon. The street lamps (the glow lights) do the rest.
+5. Fog and Snow look similarly thick; Rain is clearly lighter.
+6. Rain: lightning flashes land with the thunder, and there is no lightning between claps.
+7. Quit to the menu and open the graphics options: Textured Sky shows your own setting, not "off".
+

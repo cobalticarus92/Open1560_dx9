@@ -29,6 +29,7 @@
 #include "agiworld/cardworld.h"
 #include "agiworld/glowlight.h"
 #include "agiworld/meshrend.h"
+#include "agiworld/skyenv.h"
 #include "data7/utimer.h"
 #include "eventq7/active.h"
 #include "pcwindis/dxinit.h"
@@ -37,6 +38,7 @@
 #include "dx9bitmap.h"
 #include "dx9context.h"
 #include "dx9remix.h"
+#include "dx9remixsky.h"
 #include "dx9rsys.h"
 #include "dx9texdef.h"
 #include "dx9view.h"
@@ -261,6 +263,13 @@ void agiDX9Pipeline::EndGfx()
     agiDX9RemixApiReleaseAll();
     agiResetGlowLights();
 
+    // The race's time and weather belong to the city too (agiworld/skyenv.h). The next city
+    // publishes its own; until then the Remix sky has nothing to drive, and gives the player's
+    // "Textured Sky" setting back.
+    agiSkyEnv.TimeOfDay = -1;
+    agiSkyEnv.Weather = -1;
+    agiDX9RemixSkyEndGfx();
+
     // Same hazard, same reason: this borrows mmCullCity's sphere map, and the arena reset frees the
     // whole city underneath it. mmCullCity::Cull() republishes it for the next city.
     agiNativeCitySphereMap = nullptr;
@@ -302,6 +311,9 @@ void agiDX9Pipeline::BeginFrame()
     // (the Remix API); otherwise the set is empty and ageing it is pure cost.
     if (agiGlowHarvestEnabled)
         agiUpdateGlowLights();
+
+    // Keeps the game's sky dome off while RTX Remix Plus draws the sky. See dx9remixsky.cpp.
+    agiDX9RemixSkyBeginFrame();
 
     agiPipeline::BeginFrame();
 
@@ -466,6 +478,7 @@ void agiDX9Pipeline::EndFrame()
     // refreshed its registry slot and is sent where it is now rather than where it was last frame;
     // before Present, because Present is where Remix ends the frame and clears its drawn lights.
     agiDX9RemixApiSubmitFrame();
+    agiDX9RemixSkyEndFrame();
 
     dx9_context_->Present();
 

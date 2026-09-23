@@ -146,7 +146,7 @@ namespace
         i32 Slot;
     };
 
-    // The four functions this module calls, taken out of whichever interface table layout the bridge
+    // The functions this module calls, taken out of whichever interface table layout the bridge
     // filled in - see IdentifyBridge.
     struct RemixFunctions
     {
@@ -154,6 +154,10 @@ namespace
         PFN_remixapi_DestroyLight DestroyLight;
         PFN_remixapi_DrawLightInstance DrawLightInstance;
         PFN_remixapi_SetConfigVariable SetConfigVariable;
+
+        // Remix Plus only (null on NVIDIA's bridge). Its sky and weather system reads game values
+        // - see dx9remixsky.cpp.
+        PFN_remixapi_SetGameValue SetGameValue;
     };
 
     constexpr u32 kMaxLights = AGI_MAX_GLOW_LIGHTS;
@@ -472,6 +476,8 @@ namespace
         return mask;
     }
 
+    constexpr u32 kNoSlot = 0xFFFFFFFF;
+
     struct BridgeLayout
     {
         const char* Name;
@@ -480,14 +486,15 @@ namespace
         u32 DestroyLight;
         u32 DrawLightInstance;
         u32 SetConfigVariable;
+        u32 SetGameValue; // kNoSlot where the bridge has none
     };
 
     constexpr BridgeLayout kBridgeLayouts[] {
-        {"NVIDIA RTX Remix bridge (API 0.5.1)", SlotMask({1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12}), 7, 8, 9, 10},
+        {"NVIDIA RTX Remix bridge (API 0.5.1)", SlotMask({1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12}), 7, 8, 9, 10, kNoSlot},
         {"Remix Plus bridge (API 0.6.4, a build from before 2026-06-28)",
-            SlotMask({1, 2, 3, 5, 8, 9, 11, 12, 13, 18, 19, 30, 31, 33, 34, 36, 40}), 9, 11, 12, 13},
+            SlotMask({1, 2, 3, 5, 8, 9, 11, 12, 13, 18, 19, 30, 31, 33, 34, 36, 40}), 9, 11, 12, 13, 36},
         {"Remix Plus bridge (API 0.1000.0)",
-            SlotMask({1, 2, 3, 5, 7, 8, 10, 11, 12, 17, 18, 30, 31, 33, 34, 36, 40}), 8, 10, 11, 12},
+            SlotMask({1, 2, 3, 5, 7, 8, 10, 11, 12, 17, 18, 30, 31, 33, 34, 36, 40}), 8, 10, 11, 12, 36},
     };
 
     // The last entry must describe the vendored header itself, and does.
@@ -495,6 +502,7 @@ namespace
     static_assert(offsetof(remixapi_Interface, DestroyLight) == 10 * sizeof(AnyFn), "remix_c.h layout changed");
     static_assert(offsetof(remixapi_Interface, DrawLightInstance) == 11 * sizeof(AnyFn), "remix_c.h layout changed");
     static_assert(offsetof(remixapi_Interface, SetConfigVariable) == 12 * sizeof(AnyFn), "remix_c.h layout changed");
+    static_assert(offsetof(remixapi_Interface, SetGameValue) == 36 * sizeof(AnyFn), "remix_c.h layout changed");
     static_assert(offsetof(remixapi_Interface, GetGameValue) == 40 * sizeof(AnyFn), "remix_c.h layout changed");
 } // namespace
 
@@ -608,6 +616,9 @@ void agiDX9RemixApiInit()
     s_remix.DestroyLight = reinterpret_cast<PFN_remixapi_DestroyLight>(slots[layout->DestroyLight]);
     s_remix.DrawLightInstance = reinterpret_cast<PFN_remixapi_DrawLightInstance>(slots[layout->DrawLightInstance]);
     s_remix.SetConfigVariable = reinterpret_cast<PFN_remixapi_SetConfigVariable>(slots[layout->SetConfigVariable]);
+    s_remix.SetGameValue = (layout->SetGameValue != kNoSlot)
+        ? reinterpret_cast<PFN_remixapi_SetGameValue>(slots[layout->SetGameValue])
+        : nullptr;
     s_active = true;
 
     // Only now start paying for the harvest: the glow registry, its per-frame ageing and each glow
@@ -630,6 +641,19 @@ bool agiDX9RemixApiSetConfig(const char* key, const char* value)
         return false;
 
     return s_remix.SetConfigVariable(key, value) == REMIXAPI_ERROR_CODE_SUCCESS;
+}
+
+bool agiDX9RemixApiHasGameValues()
+{
+    return s_active && s_remix.SetGameValue;
+}
+
+bool agiDX9RemixApiSetGameValue(const char* key, const char* value)
+{
+    if (!agiDX9RemixApiHasGameValues() || !key || !value)
+        return false;
+
+    return s_remix.SetGameValue(key, value) == REMIXAPI_ERROR_CODE_SUCCESS;
 }
 
 void agiDX9RemixApiSubmitFrame()

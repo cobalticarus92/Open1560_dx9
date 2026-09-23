@@ -49,6 +49,12 @@ public:
     // function can read it while leaving the mangling alone.
     static i32 IsFlashing();
 
+    // Clears DoFlash, which mmSky::Draw would otherwise do. Needed when the sky is not being drawn at
+    // all (agiRQ.TexturedSky off, as the RTX Remix Plus sky does - see mmCullCity::Cull): nothing
+    // then consumes the flag, and a single thunder clap would read as flashing forever. Same
+    // accessor-not-access-change reasoning as IsFlashing.
+    static void ClearFlash();
+
 private:
     // Set by mmRainAudio::Update when thunder plays, and consumed by mmSky::Draw, which swaps the
     // sky mesh's texture for FlashTex for a single frame and then clears the flag. That makes the

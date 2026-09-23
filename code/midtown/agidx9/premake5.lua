@@ -25,6 +25,8 @@ arts_component "agidx9"
         "dx9probe.h",
         "dx9remix.cpp",
         "dx9remix.h",
+        "dx9remixsky.cpp",
+        "dx9remixsky.h",
         "remix_c.h",
     }
 

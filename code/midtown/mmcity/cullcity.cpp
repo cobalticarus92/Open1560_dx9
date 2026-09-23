@@ -36,6 +36,7 @@ define_dummy_symbol(mmcity_cullcity);
 #include "sky.h"
 
 #include "agiworld/glowlight.h"
+#include "agiworld/skyenv.h"
 #include "agiworld/texsheet.h"
 #include "arts7/cullmgr.h"
 #include "arts7/sim.h"
@@ -119,6 +120,11 @@ i32 mmSky::IsFlashing()
     return DoFlash;
 }
 
+void mmSky::ClearFlash()
+{
+    DoFlash = 0;
+}
+
 void mmCullCity::Cull()
 {
     // Publish the city's vehicle sphere map for the hardware-transform path.
@@ -147,6 +153,22 @@ void mmCullCity::Cull()
     //
     //     if (agiLightningFlash < 0.01f)
     //         agiLightningFlash = 0.0f;
+
+    // Thunder, counted for the renderer (agiworld/skyenv.h) - the RTX Remix Plus sky fires a lightning
+    // strike on each one, so the flash lands with the game's own thunder rather than at random.
+    //
+    // Sampled here for the reason given above: this runs before any drawing, so the flag raised by
+    // mmRainAudio::Update this frame is still set. With a textured sky, mmSky::Draw then clears it as
+    // it swaps in the flash texture, exactly as before. Without one - the game's own "Textured Sky"
+    // option off, which is how the Remix Plus sky hides the dome - nothing draws the sky, nothing
+    // clears the flag, and one clap would count again every frame. So it is cleared here instead.
+    if (mmSky::IsFlashing())
+    {
+        ++agiSkyEnv.ThunderCount;
+
+        if (!agiRQ.TexturedSky)
+            mmSky::ClearFlash();
+    }
 
     if (FogEnd == 0.0f || agiCurState.GetDrawMode() == agiDrawDepth)
     {
@@ -290,6 +312,18 @@ void mmCullCity::Init(char* name, asCamera* camera)
     }
 
     InitTimeOfDayAndWeather();
+
+    // Publish this race's time of day, weather and the game's fog distances for the renderer - see
+    // agiworld/skyenv.h. After InitTimeOfDayAndWeather, so it describes the city exactly as set up.
+    {
+        const i32 time_of_day = std::clamp(static_cast<i32>(MMSTATE.TimeOfDay), 0, 3);
+
+        agiSkyEnv.TimeOfDay = time_of_day;
+        agiSkyEnv.Weather = std::clamp(static_cast<i32>(MMSTATE.Weather), 0, 3);
+
+        for (i32 weather = 0; weather < 4; ++weather)
+            agiSkyEnv.FogEnd[weather] = mmEnvSetup[time_of_day][weather].FogEnd;
+    }
 
     if (IsSnowing)
         InitSnowTextures();
