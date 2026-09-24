@@ -146,11 +146,23 @@ namespace
         f32 Softness;
     };
 
+    // How many in-place updates a light takes before it moves to a new hash - see UpdateLight. At 60
+    // updates a second, a light that moves every frame changes hash about every two seconds.
+    constexpr u32 kMaxStaleHandles = 120;
+
     struct RemixLight
     {
         u32 GlowId; // 0 = free slot
         u16 Generation;
         remixapi_LightHandle Handle;
+
+        // Bridge handles this light's current hash was created under before Handle, superseded by
+        // in-place updates. Each still holds a map entry in the bridge server; they are destroyed
+        // together when the hash is retired. See UpdateLight. One spare, for the handle that puts the
+        // light out when its hash is retired.
+        u16 StaleCount;
+        remixapi_LightHandle Stale[kMaxStaleHandles + 1];
+
         Vector3 Position;
         Vector3 Radiance;
         f32 Radius;
@@ -205,10 +217,15 @@ namespace
         u32 Destroyed;
         u32 Culled;
         u32 Failed;
+        u32 Rehashed;
     };
 
     RemixFunctions s_remix {};
     bool s_active = false;
+
+    // Whether the runtime updates a light in place when CreateLight is called again with its hash.
+    // See UpdateLight.
+    bool s_update_in_place = false;
     bool s_init_tried = false;
 
     RemixLight s_lights[kMaxLights] {};
@@ -453,14 +470,100 @@ static bool CreateLight(const Candidate& candidate, u16 generation, remixapi_Lig
     return true;
 }
 
-static void DestroySlot(RemixLight& light)
+// Destroys every bridge handle the light holds. They all name the same runtime light (its current
+// hash), so the runtime erases it once and ignores the repeats; each destroy is what frees that
+// handle's entry in the bridge server.
+static void DestroyHandles(RemixLight& light)
 {
+    for (u32 i = 0; i < light.StaleCount; ++i)
+        s_remix.DestroyLight(light.Stale[i]);
+
+    light.StaleCount = 0;
+
     if (light.Handle)
         s_remix.DestroyLight(light.Handle);
+
+    light.Handle = nullptr;
+}
+
+static void DestroySlot(RemixLight& light)
+{
+    DestroyHandles(light);
 
     light = {};
     --s_live;
     ++s_stats.Destroyed;
+}
+
+// Re-sends a light whose position, colour, size or aim changed. False if it could not be sent.
+//
+// WHY THIS IS NOT JUST "DESTROY AND CREATE"
+//
+// Through Remix Plus's bridge, a create and a destroy do not land in the same frame. CreateLight
+// takes effect at once, and also registers the light as persistent: the runtime then lights it every
+// frame by itself, drawn or not. DestroyLight is queued until Present and applied at the start of the
+// frame after. So replacing a light every time it moved - destroy the old, create a successor under
+// a new hash - kept the old one lit for a frame beside the new: every moving car trailed a copy of
+// its lights one frame behind, which is exactly the lag that was reported. And every successor was a
+// new light to the denoiser, with no history, so it faded in over several frames on top of that.
+//
+// Remix Plus updates a light in place instead when CreateLight is called again with a hash it
+// already has (LightManager::addExternalLight), immediately, and without losing its temporal data.
+// That is what happens here: same hash, new definition, no destroy.
+//
+// The bridge still mints a new handle for that call, and its server keeps a small map entry per
+// handle until the handle is destroyed - which cannot happen while the light lives, because every
+// handle of a light names the same runtime light, and destroying any of them erases it. So the
+// superseded handles are collected, and after kMaxStaleHandles updates the light moves to its next
+// generation's hash and the old one is released whole. Before that release, the old light is
+// updated in place to (next to) no light at all, so the frame its erase is still queued shows no
+// ghost either. Once every couple of seconds of driving, not once a frame.
+//
+// NVIDIA's runtime erases on destroy and does not replace a light on a repeated hash, so there the
+// light is replaced under the next generation's hash every time, as it always was.
+static bool UpdateLight(RemixLight& light, const Candidate& candidate)
+{
+    if (s_update_in_place && light.Handle && (light.StaleCount < kMaxStaleHandles))
+    {
+        remixapi_LightHandle handle = nullptr;
+
+        if (!CreateLight(candidate, light.Generation, handle))
+            return false;
+
+        light.Stale[light.StaleCount++] = light.Handle;
+        light.Handle = handle;
+
+        return true;
+    }
+
+    if (s_update_in_place && light.Handle)
+    {
+        // Put the retiring light out first, in place and at once, so the frame it stays queued for
+        // erase lights nothing. Not zero: a black light is not a valid light definition.
+        Candidate dark = candidate;
+        dark.Position = light.Position;
+        dark.Radius = light.Radius;
+        dark.Shape = light.Shape;
+        dark.Radiance = {1e-6f, 1e-6f, 1e-6f};
+
+        remixapi_LightHandle handle = nullptr;
+
+        if (CreateLight(dark, light.Generation, handle))
+        {
+            light.Stale[light.StaleCount++] = light.Handle;
+            light.Handle = handle;
+        }
+
+        ++s_stats.Rehashed;
+    }
+
+    // Retire the current hash and create the light's successor under the next one - see LightHash
+    // for why the hash must change. The destroys are by the old hash, so they cannot touch the new
+    // light whichever runtime applies them, or when.
+    DestroyHandles(light);
+    ++light.Generation;
+
+    return CreateLight(candidate, light.Generation, light.Handle);
 }
 
 static void ApplyConfigOverrides()
@@ -566,14 +669,19 @@ namespace
         u32 DrawLightInstance;
         u32 SetConfigVariable;
         u32 SetGameValue; // kNoSlot where the bridge has none
+
+        // The runtime behind this bridge updates a light in place when CreateLight is called again
+        // with its hash. See UpdateLight.
+        bool UpdateInPlace;
     };
 
     constexpr BridgeLayout kBridgeLayouts[] {
-        {"NVIDIA RTX Remix bridge (API 0.5.1)", SlotMask({1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12}), 7, 8, 9, 10, kNoSlot},
+        {"NVIDIA RTX Remix bridge (API 0.5.1)", SlotMask({1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12}), 7, 8, 9, 10, kNoSlot,
+            false},
         {"Remix Plus bridge (API 0.6.4, a build from before 2026-06-28)",
-            SlotMask({1, 2, 3, 5, 8, 9, 11, 12, 13, 18, 19, 30, 31, 33, 34, 36, 40}), 9, 11, 12, 13, 36},
+            SlotMask({1, 2, 3, 5, 8, 9, 11, 12, 13, 18, 19, 30, 31, 33, 34, 36, 40}), 9, 11, 12, 13, 36, false},
         {"Remix Plus bridge (API 0.1000.0)", SlotMask({1, 2, 3, 5, 7, 8, 10, 11, 12, 17, 18, 30, 31, 33, 34, 36, 40}),
-            8, 10, 11, 12, 36},
+            8, 10, 11, 12, 36, true},
     };
 
     // The last entry must describe the vendored header itself, and does.
@@ -718,6 +826,7 @@ void agiDX9RemixApiInit()
     s_remix.SetGameValue = (layout->SetGameValue != kNoSlot)
         ? reinterpret_cast<PFN_remixapi_SetGameValue>(slots[layout->SetGameValue])
         : nullptr;
+    s_update_in_place = layout->UpdateInPlace;
     s_active = true;
 
     // Only now start paying for the harvest: the glow registry, its per-frame ageing and each glow
@@ -852,17 +961,9 @@ void agiDX9RemixApiSubmitFrame()
             if (!moved && !recoloured && !resized && !reshaped)
                 continue;
 
-            // Retire the old light and create its successor under the next generation's hash - see
-            // LightHash for why the hash must change. The old destroy is by the old hash, so the two
-            // cannot interfere whichever runtime applies them, or when.
-            if (light.Handle)
-                s_remix.DestroyLight(light.Handle);
-
-            light.Handle = nullptr;
-            ++light.Generation;
-
-            if (!CreateLight(candidate, light.Generation, light.Handle))
+            if (!UpdateLight(light, candidate))
             {
+                DestroyHandles(light);
                 light = {};
                 --s_live;
                 continue;
@@ -936,9 +1037,9 @@ void agiDX9RemixApiLogStats(u32 frame)
     const f32 frames = static_cast<f32>(std::max<u32>(s_stats.Frames, 1));
 
     Displayf("DX9 REMIXAPI: frame=%u live=%u drawn/frame=%.1f | over %u frames: created=%u updated=%u destroyed=%u "
-             "over-budget=%u failed=%u",
+             "over-budget=%u failed=%u rehashed=%u",
         frame, s_live, static_cast<f32>(s_stats.Drawn) / frames, s_stats.Frames, s_stats.Created, s_stats.Updated,
-        s_stats.Destroyed, s_stats.Culled, s_stats.Failed);
+        s_stats.Destroyed, s_stats.Culled, s_stats.Failed, s_stats.Rehashed);
 
     s_stats = {};
 }

@@ -109,18 +109,25 @@ easy to trip over.
    `agiDX9Pipeline::BeginGfx`, after the context exists. The device is parked, not destroyed,
    across pipeline restarts, so the binding survives going from the menu into a race.
 6. **Every `CreateLight` mints a new bridge handle; only `DestroyLight` frees it.** The server keeps
-   a map from bridge handle to runtime handle. So:
-   - Updating a light by calling `CreateLight` again with the same hash would leak one server-side
-     map entry per call: at 50 moving lights and 60 fps, 3,000 entries a second for the whole
-     session. An update is therefore **destroy, then create**.
-   - **The re-created light needs a new hash.** Remix Plus does not destroy immediately: it queues
-     the erase, by hash, for the start of the next frame. A light re-created under the same hash
-     would be wiped a frame later, and every moving light would go dark. Each light's hash carries
-     a generation that is bumped on every re-send (`LightHash` in `dx9remix.cpp`), so the old
-     light's erase never touches its successor, on either runtime.
-   - The cost: each re-send is a new light to the runtime, so the denoiser starts it fresh. Moving
-     lights are re-sent on every frame they move. If that shows up as shimmer on vehicle lights, see
-     section 8.
+   a map from bridge handle to runtime handle, which is the light's hash. Every handle of one light
+   therefore names the same runtime light, and destroying any of them erases it.
+   - **Remix Plus: update in place.** Its runtime applies a `CreateLight` at once, with a hash it
+     already has overwriting that light (`LightManager::addExternalLight`) and keeping its temporal
+     data. It registers every created light as persistent, lit each frame whether drawn or not. But
+     it holds a `DestroyLight` until Present and applies the erase at the start of the next frame.
+     Replacing a moving light (destroy the old, create a successor under a new hash) therefore left
+     the old one lit for a frame beside the new. Every moving car trailed a copy of its lights one
+     frame behind, and each successor was a new light to the denoiser, fading in from nothing.
+     Changed lights are now re-sent with `CreateLight` under the same hash (`UpdateLight` in
+     `dx9remix.cpp`). The superseded bridge handles are kept (about 40 bytes each in the bridge
+     server). After 120 updates, about two seconds of driving, the light moves to its next
+     generation's hash, and all the old handles are destroyed together. The retiring light is first
+     updated in place to no light at all, so the frame its erase waits for shows no ghost. A mock of
+     that runtime, a light moving a metre a frame: before, a second, stale light in 599 of 600
+     frames; after, none, with at most 121 bridge entries per light.
+   - **NVIDIA: destroy, then create under a new hash.** Its runtime erases on destroy and does not
+     replace a light on a repeated hash. Each light's hash carries a generation, bumped on every
+     re-send there (`LightHash`), so the old light's erase never touches its successor.
 7. **Lights must be drawn every frame.** Upstream clears its list of drawn API lights at the end of
    every frame. Remix Plus queues each draw and applies it at the start of the next frame, after
    that frame's erases. Drawing every live light every frame is right for both. A created light
@@ -369,8 +376,8 @@ stubs both today (fact 4). When a Remix Plus bridge forwards them:
 - Add its table layout to `kBridgeLayouts` (its filled-slot mask changes the moment it fills a new
   field, so it is refused until then, which is the safe failure).
 - For that layout, re-send a changed light with `UpdateLightDefinition` on its existing handle
-  instead of destroy-and-create. The light keeps one hash and one identity, the denoiser keeps its
-  history, and the generation in the hash stops changing.
+  instead of the repeated `CreateLight` (fact 6). That mints no bridge handles, so the hash never
+  has to change.
 - Optionally drop the per-light `DrawLightInstance` loop for one `AutoInstancePersistentLights`
   call, if persistent registration is also forwarded. Measure first: per-light draws are cheap.
 

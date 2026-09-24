@@ -38,9 +38,8 @@
 //   - Only lights, materials, meshes, instances and SetConfigVariable are forwarded. Remix Plus also
 //     forwards SetGameValue/GetGameValue; its UpdateLightDefinition and AutoInstancePersistentLights
 //     are bridge stubs that fail, so a 32-bit game cannot use them yet.
-//   - Every CreateLight mints a new bridge handle, and only DestroyLight frees it. Recreating a
-//     light in place (same hash, no destroy) would leak one server-side map entry per call, so an
-//     update is a destroy and a create - under a new hash, because Remix Plus defers the destroy.
+//   - Every CreateLight mints a new bridge handle, and only DestroyLight frees it. How a moving light
+//     is updated differs between the runtimes behind the bridges - see UpdateLight in the .cpp.
 
 // Initialises the API once per process, the first time it is called with the Remix bridge
 // detected and -remixapi on. Must run after the D3D9 device exists: the bridge binds API calls to
