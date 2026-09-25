@@ -156,6 +156,10 @@ namespace
         f32 Radius;
         Shaping Shape;
         f32 Power;
+
+        // For -remixapidebug: which glow texture this light came from, and the kind it counted as.
+        const char* Texture;
+        agiGlowKind Kind;
         bool Dynamic;
         i32 Slot;
     };
@@ -309,7 +313,7 @@ static bool ResolveGlow(const agiGlowLight& glow, f32 radius, Candidate& out)
         }
     }
 
-    const agiGlowKind kind = agiClassifyGlowKind(name, color);
+    const agiGlowKind kind = agiGlowLightKind(glow, name, color);
 
     if (!agiGlowKindEnabled(kind))
         return false;
@@ -351,6 +355,8 @@ static bool ResolveGlow(const agiGlowLight& glow, f32 radius, Candidate& out)
         return false;
 
     out.GlowId = glow.Id;
+    out.Texture = name;
+    out.Kind = kind;
 
     // The position as last harvested, never extrapolated. This runs at the end of the frame, after
     // every sprite drawn this frame has refreshed its slot, so a live light is current by
@@ -441,9 +447,10 @@ static bool CreateLight(const Candidate& candidate, u16 generation, remixapi_Lig
     if (PARAM_remix_debug.get_or(false) && (s_debug_logged < 64))
     {
         ++s_debug_logged;
-        Displayf("REMIXAPI: light %08X gen=%u pos=(%.1f %.1f %.1f) radiance=(%.1f %.1f %.1f) r=%.2f%s",
-            candidate.GlowId, static_cast<u32>(generation), position.x, position.y, position.z, radiance.x, radiance.y,
-            radiance.z, radius, candidate.Dynamic ? " dynamic" : "");
+        Displayf("REMIXAPI: light %08X gen=%u %s (%s) pos=(%.1f %.1f %.1f) radiance=(%.1f %.1f %.1f) r=%.2f%s",
+            candidate.GlowId, static_cast<u32>(generation), candidate.Texture ? candidate.Texture : "(no texture)",
+            agiGlowKindName(candidate.Kind), position.x, position.y, position.z, radiance.x, radiance.y, radiance.z,
+            radius, candidate.Dynamic ? " dynamic" : "");
 
         if (candidate.Shape.Aimed)
         {

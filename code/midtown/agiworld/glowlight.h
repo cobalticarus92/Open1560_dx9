@@ -93,6 +93,13 @@ struct agiGlowLight
     // agiAddGlowLightRGB.
     Vector3 Local;
     u32 HasLocal;
+
+    // The light's kind when the harvest route knows it better than the colour does, stored as
+    // agiGlowKind + 1 so that 0 - what a zeroed slot holds - means "classify from texture name and
+    // colour as usual". Set for headlights: the beam mesh, and a
+    // vehicle's front lamp flares, which are drawn with ordinary glow sheets and would otherwise
+    // classify by colour as street lamps or generic glows - out of reach of [Glow.Headlights].
+    u32 KindOverride;
 };
 
 // Whether the glow harvest runs at all. Off until a consumer needs it: the harvest, the registry's
@@ -214,6 +221,9 @@ enum class agiGlowKind
 
 agiGlowKind agiClassifyGlowKind(const char* name, const Vector3& color);
 
+// The kind a registry entry counts as: its harvest-time override, or the colour classification.
+agiGlowKind agiGlowLightKind(const agiGlowLight& light, const char* name, const Vector3& color);
+
 // False when the ini or command line has switched this kind off. Checked at harvest time, so a
 // disabled kind costs no pool slot and no cell-grid entry.
 bool agiGlowKindEnabled(agiGlowKind kind);
@@ -246,7 +256,8 @@ void agiAddGlowLight(
 // `direction` and `cone_angle` make it an aimed light - see agiGlowLight::Direction. Zero, the
 // default, is a light that shines every way, which is every glow but a headlight.
 void agiAddGlowLightRGB(const Vector3& position, const Vector3& tint, f32 radius, agiTexDef* texture, f32 u, f32 v,
-    const Vector3& direction = Vector3 {0.0f, 0.0f, 0.0f}, f32 cone_angle = 0.0f, const Vector3* local = nullptr);
+    const Vector3& direction = Vector3 {0.0f, 0.0f, 0.0f}, f32 cone_angle = 0.0f, const Vector3* local = nullptr,
+    i32 kind = -1);
 
 // Ages the live set and retires lights whose sprite has not been seen for a while.
 // Called once per frame by the pipeline (agidx9/dx9pipe.cpp, BeginFrame).

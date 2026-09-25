@@ -147,7 +147,8 @@ does and does not forward to a 32-bit game, and the phases still to come are in
 | `-remixlightpower <f>` | 1.5 | Overall brightness of those lights. The `-light*` multipliers below scale on top of it. |
 | `-remixlightradius <f>` | 0.15 | Size of each light's emitter, in world units. Brightness does not depend on it; it sets how soft the shadows are. |
 | `-remixmaxlights <n>` | 192 | Most lights sent per frame; the brightest are kept. |
-| `-remixheadlights` | on | Send headlights as spot lights: one per lamp, placed at the lamp and aimed down the beam the game draws. |
+| `-remixheadlights` | on | Send headlights as spot lights: one per lamp, placed at the lamp and aimed down the beam the game draws. Covers the white flares on the front of vehicles too, so turning it off leaves no light at the headlamps. |
+| `-glowfrontheadlights` | on | Count white and warm flares on the front of a vehicle as headlights rather than street lamps or other glows. |
 | `-remixbeamsoftness <f>` | 0.3 | How gradual a headlight beam's edge is, 0 (hard) to 1. |
 | `-remixconfig <k=v\|...>` | none | Remix options (`rtx.conf` keys) applied once the API connects, separated by `\|`, e.g. `rtx.fallbackLightMode=0`. |
 | `-remixapidebug` | off | Log the first 64 lights as they are created. |

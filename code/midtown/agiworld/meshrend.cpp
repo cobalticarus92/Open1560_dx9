@@ -2737,7 +2737,7 @@ f32 agiGlowLightReach(f32 flare_half_extent)
 }
 
 void agiAddGlowLightRGB(const Vector3& position, const Vector3& tint, f32 radius, agiTexDef* texture, f32 u, f32 v,
-    const Vector3& direction, f32 cone_angle, const Vector3* local)
+    const Vector3& direction, f32 cone_angle, const Vector3* local, i32 kind)
 {
     if ((tint.x <= 0.0f) && (tint.y <= 0.0f) && (tint.z <= 0.0f))
         return;
@@ -2789,7 +2789,8 @@ void agiAddGlowLightRGB(const Vector3& position, const Vector3& tint, f32 radius
     // a pool entry nor a cell-grid bucket. The flare itself still draws - these settings control
     // what a glow EMITS, not whether it is visible, which is the distinction the original engine
     // draws too (every one of these was a pure billboard that lit nothing).
-    if (!agiGlowKindEnabled(agiClassifyGlowKind(texture ? texture->Tex.Name : nullptr, tint)))
+    if (!agiGlowKindEnabled((kind >= 0) ? static_cast<agiGlowKind>(kind)
+                                        : agiClassifyGlowKind(texture ? texture->Tex.Name : nullptr, tint)))
         return;
 
     f32 best_dist_sq = kMaxTrackedMatchDist * kMaxTrackedMatchDist;
@@ -2888,6 +2889,7 @@ void agiAddGlowLightRGB(const Vector3& position, const Vector3& tint, f32 radius
     slot->ConeAngle = cone_angle;
     slot->Local = local ? *local : Vector3 {0.0f, 0.0f, 0.0f};
     slot->HasLocal = local ? 1u : 0u;
+    slot->KindOverride = (kind >= 0) ? static_cast<u32>(kind) + 1 : 0;
 
     if (fresh)
     {
@@ -2981,6 +2983,11 @@ void agiUpdateGlowLights()
     agiGlowCardsNoTexture = 0;
     agiGlowCardsNotGlow = 0;
     agiGlowCardsHarvested = 0;
+}
+
+agiGlowKind agiGlowLightKind(const agiGlowLight& light, const char* name, const Vector3& color)
+{
+    return light.KindOverride ? static_cast<agiGlowKind>(light.KindOverride - 1) : agiClassifyGlowKind(name, color);
 }
 
 void agiAddGlowLight(

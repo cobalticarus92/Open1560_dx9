@@ -2673,11 +2673,19 @@ static bool HarvestHeadlightBeam(
         world_lamp.Dot(local_lamp, world);
 
         agiAddGlowLightRGB(world_lamp, tint, world_length, texture, accum_u * inv_verts, accum_v * inv_verts,
-            world_direction, cone, &identity);
+            world_direction, cone, &identity, static_cast<i32>(agiGlowKind::Headlight));
     }
 
     return true;
 }
+
+// White and warm flares on a glow mesh's front half count as headlights - see HarvestWorldGlow.
+static mem::cmd_param PARAM_glow_front_headlights {
+    "glowfrontheadlights", "Treat white flares on the front of a vehicle as headlights, not street lamps"};
+
+// How far forward of the model's centre a flare must sit to count as front. Enough to keep a flare on
+// the centre line (a roof lamp) out of it.
+static constexpr f32 kFrontFlareZ = 0.25f;
 
 // Harvests a world-space glow mesh as a light source. See agiworld/glowlight.h.
 //
@@ -2822,8 +2830,23 @@ static void HarvestWorldGlow(
         // space before the world transform, so an offset rides with the car however it turns. The
         // mesh is centred on the vehicle, so "outward" means away from its centre line: one setting
         // moves both tail lights of a pair out to their corners.
-        const agiGlowTuning tuning =
-            agiResolveGlowTuning(texture->Tex.Name, agiClassifyGlowKind(texture->Tex.Name, tint));
+        // What sort of lamp this is. By colour, as everywhere - except that a white or warm flare in the
+        // FRONT half of the model is a headlamp. The glow mesh this route sees is overwhelmingly a
+        // vehicle's (mmCarModel::DrawGlow, aiVehicleInstance::DrawGlow), and its front one carries the
+        // headlamp flares as well as the beam. Those flares use ordinary glow sheets, not FXLTCONE, so
+        // by colour alone a warm one is a street lamp (brightness 10) and a neutral one a generic glow:
+        // switching [Glow.Headlights] off left a bright light at every headlamp. Vehicles face -Z
+        // (aiVehicleMGR), so the front half is negative Z. Coloured flares - indicators, and anything
+        // on the red and amber vehicle sheets - keep their own kind.
+        agiGlowKind kind = agiClassifyGlowKind(texture->Tex.Name, tint);
+
+        if (((kind == agiGlowKind::Lamp) || (kind == agiGlowKind::Generic)) && (local_centre.z < -kFrontFlareZ) &&
+            PARAM_glow_front_headlights.get_or(true))
+        {
+            kind = agiGlowKind::Headlight;
+        }
+
+        const agiGlowTuning tuning = agiResolveGlowTuning(texture->Tex.Name, kind);
 
         if (tuning.HasEnabled && !tuning.Enabled)
             continue;
@@ -2841,7 +2864,8 @@ static void HarvestWorldGlow(
         // with the square of reach, that alone made the same fixture ~3x brighter as a card than as
         // a mesh.
         agiAddGlowLightRGB(world_centre, tint, agiGlowLightReach(flare_size), texture, cluster.AccumU * inv_verts,
-            cluster.AccumV * inv_verts, Vector3 {0.0f, 0.0f, 0.0f}, 0.0f, &identity);
+            cluster.AccumV * inv_verts, Vector3 {0.0f, 0.0f, 0.0f}, 0.0f, &identity,
+            (kind == agiGlowKind::Headlight) ? static_cast<i32>(kind) : -1);
     }
 }
 
