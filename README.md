@@ -172,6 +172,25 @@ and restored afterwards. See [section 9 of the plan](docs/remix_api_plan.md#9-th
 | `-remixprecipitation <0/1>` | 0 | Remix Plus's own rain and snow. Hide the game's particle textures with Remix's texture tagging if you turn this on. |
 | `-remixsunrotation <f>` | 0 | Degrees added to the sun and moon azimuth. |
 
+**Wet roads.** While it rains, a puddle-and-damp layer is laid over the roads through the Remix
+API, and the path tracer reflects the city in it. The game generates the puddle pattern from noise
+(domain-warped, tiling, cached in `Open1560_RemixWet\`), and every road piece gets a world-space
+decal twin textured with it. Standing water is near-black and mirror-smooth, damp tarmac a darker,
+glossier film. Everything else gets a little glossier too. Works on any bridge `-remixapi`
+connects to. Roads under cover get wet as well. See
+[section 11 of the plan](docs/remix_api_plan.md#11-wet-roads).
+
+| Switch | Default | Effect |
+| --- | --- | --- |
+| `-remixwet <0/1>` | 1 | Wet roads in wet weather (needs `-remixapi`). |
+| `-remixwetrain`, `-remixwetsnow`, `-remixwetfog`, `-remixwetclear` | 1.0, 0.35, 0, 0 | Wetness for each game weather, 0 to 1. |
+| `-remixwetcoverage <f>` | 0.2 | Share of the road under standing water at full wetness. |
+| `-remixwettile <f>` | 64 | Size of the repeating puddle pattern, in world units. |
+| `-remixwetseed <n>` | 1 | Puddle pattern seed. |
+| `-remixwetpuddleroughness`, `-remixwetdamproughness` | 0.03, 0.28 | Roughness of standing water and of damp road. |
+| `-remixwetgloss <f>` | 0.45 | Remix's default roughness for game textures at full wetness (0 leaves it alone). |
+| `-remixwetdryroughness <f>` | 0.7 | The value it is put back to when the race ends. |
+
 A census line, `DX9 REMIXAPI`, reports live lights and how many were created, re-sent and destroyed
 every 120 frames.
 

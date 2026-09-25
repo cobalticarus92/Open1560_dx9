@@ -1244,6 +1244,9 @@ f32 agiNativeReflectivity = 0.0f;
 // like, and it costs nothing to use because the engine already loaded and passed it.
 agiTexDef* agiNativeReflectionTex = nullptr;
 
+// See agi/rsys.h. Scoped to the one DrawNativeTransform call in DrawLitEnv.
+bool agiNativeGroundDraw = false;
+
 void agiMeshSet::DrawLitSph(agiMeshLighter lighter, agiTexDef* sph_map, u32 flags)
 {
     // Vehicle bodies. DrawLit() now takes the hardware-transform path here too, which is what puts
@@ -1322,8 +1325,12 @@ void agiMeshSet::DrawLitEnv(agiMeshLighter lighter, agiTexDef* env_map, Matrix34
             // that case into DrawLit(), which forwards it to Draw() and so to FirstPass() with no
             // lighter. Ask for the same here rather than letting the GPU light road and terrain
             // geometry off the dynamic light list. See the matching note in Draw().
+            agiNativeGroundDraw = true;
+
             DrawNativeTransform(flags, IsStaticCityLighter(lighter), env_fx.EnvTexture ? &env_fx : nullptr, nullptr,
                 /*unlit=*/lighter == nullptr);
+
+            agiNativeGroundDraw = false;
         }
         else if (agiCurState.GetMaxTextures() > 1 && agiRQ.EnvMap)
         {

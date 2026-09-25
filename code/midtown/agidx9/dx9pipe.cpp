@@ -39,6 +39,7 @@
 #include "dx9context.h"
 #include "dx9remix.h"
 #include "dx9remixsky.h"
+#include "dx9remixwet.h"
 #include "dx9rsys.h"
 #include "dx9texdef.h"
 #include "dx9view.h"
@@ -269,6 +270,7 @@ void agiDX9Pipeline::EndGfx()
     agiSkyEnv.TimeOfDay = -1;
     agiSkyEnv.Weather = -1;
     agiDX9RemixSkyEndGfx();
+    agiDX9RemixWetEndGfx();
 
     // Same hazard, same reason: this borrows mmCullCity's sphere map, and the arena reset frees the
     // whole city underneath it. mmCullCity::Cull() republishes it for the next city.
@@ -313,6 +315,8 @@ void agiDX9Pipeline::BeginFrame()
         agiUpdateGlowLights();
 
     remix_frame_sent_ = false;
+
+    agiDX9RemixWetBeginFrame();
 
     // Keeps the game's sky dome off while RTX Remix Plus draws the sky. See dx9remixsky.cpp.
     agiDX9RemixSkyBeginFrame();
@@ -563,6 +567,7 @@ void agiDX9Pipeline::EndFrame()
 
             agiDX9DumpAttribution();
             agiDX9RemixApiLogStats(census_frames);
+            agiDX9RemixWetLogStats(census_frames);
         }
 
         agiDX9Census = {};

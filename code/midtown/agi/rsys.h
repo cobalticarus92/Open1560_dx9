@@ -54,6 +54,12 @@ struct agiNativeMaterialFx
     const Matrix34* EnvTransform {};
 };
 
+// True while agiMeshSet::DrawLitEnv submits through the hardware path: the draw in flight is road
+// or ground. A global rather than a flag in agiNativeMaterialFx because DrawLitEnv only passes that
+// struct when it has an environment map to apply, and the ground is ground either way - the RTX
+// Remix wet-road layer (agidx9/dx9remixwet.cpp) keys on it. Defined in agiworld/meshrend.cpp.
+extern bool agiNativeGroundDraw;
+
 // -nocull: backface, LOD and distance culling all off, for RTX Remix captures. Defined in
 // agiworld/meshrend.cpp; declared here because agidx9 and mmcity both consult it and a second
 // cmd_param of the same name would register twice. Portal/cell visibility is not covered - that

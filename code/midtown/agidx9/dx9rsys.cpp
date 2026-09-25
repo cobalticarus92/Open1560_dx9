@@ -40,6 +40,8 @@
 
 #include "dx9context.h"
 #include "dx9ffshade.h"
+#include "dx9remix.h"
+#include "dx9remixwet.h"
 #include "dx9shader.h"
 #include "dx9texdef.h"
 
@@ -3039,6 +3041,10 @@ bool agiDX9Rasterizer::MeshWorld(agiWorldVtx* vertices, i32 vertex_count, u16* i
     // them to light, out of the set.
     if (agiGlowHarvestEnabled && additive_glow && Pipe()->IsInScene())
         HarvestWorldGlow(native_tex, vertices, indices, index_count, world);
+
+    // The wet-road layer's twin of this road piece, drawn alongside it. See dx9remixwet.cpp.
+    if (agiNativeGroundDraw && !skin && agiDX9RemixApiActive() && Pipe()->IsInScene())
+        agiDX9RemixWetGround(vertices, vertex_count, indices, index_count, world);
 
     // Fog for this draw is decided in one place further down, once remap_vertex_fog is known - see
     // the vertex-fog remap. Additive glows want it off for the same reason as the screen path (see

@@ -26,33 +26,7 @@
 
 #include "dx9_windows.h"
 
-// remix_c.h is third-party (MIT, NVIDIA and the Remix Plus contributors), vendored unmodified from
-// Remix Plus (RemixProjGroup/dxvk-remix 9aab34bd, API 0.1000.0) - see dx9remix.h for why that copy.
-// It lives in vendor/remix with the other third-party code, outside code/, which keeps it out of the
-// project's clang-format check: it is someone else's file, and stays byte-identical to theirs.
-// It is kept out of this project's warning level rather than edited: its error-code enum carries
-// HRESULT-style values above INT_MAX, which a strict build flags.
-//
-// REMIX_ALLOW_X86: the header refuses 32-bit targets because the ray tracing runtime cannot run in
-// one. That is true and beside the point - we only use its types, and the bridge client that
-// implements them IS 32-bit. The Remix Plus API reference documents exactly this use.
-//
-// REMIX_WINAPI_NO_LIBRARY_LOADER: skips the header's inline DLL loader. We never load the runtime
-// ourselves; the bridge client is already the process's D3D9 module.
-#pragma warning(push, 0)
-#ifdef __clang__
-#    pragma clang diagnostic push
-#    pragma clang diagnostic ignored "-Weverything"
-#endif
-#ifndef REMIX_ALLOW_X86
-#    define REMIX_ALLOW_X86
-#endif
-#define REMIX_WINAPI_NO_LIBRARY_LOADER
-#include "remix/remix_c.h"
-#ifdef __clang__
-#    pragma clang diagnostic pop
-#endif
-#pragma warning(pop)
+#include "dx9remixapi.h"
 
 #include <algorithm>
 #include <cmath>
@@ -225,6 +199,7 @@ namespace
     };
 
     RemixFunctions s_remix {};
+    agiDX9RemixSceneApi s_scene {};
     bool s_active = false;
 
     // Whether the runtime updates a light in place when CreateLight is called again with its hash.
@@ -682,6 +657,13 @@ namespace
         u32 SetConfigVariable;
         u32 SetGameValue; // kNoSlot where the bridge has none
 
+        // The scene half: materials, meshes, instances. Every known bridge forwards these.
+        u32 CreateMaterial;
+        u32 DestroyMaterial;
+        u32 CreateMesh;
+        u32 DestroyMesh;
+        u32 DrawInstance;
+
         // The runtime behind this bridge updates a light in place when CreateLight is called again
         // with its hash. See UpdateLight.
         bool UpdateInPlace;
@@ -689,11 +671,12 @@ namespace
 
     constexpr BridgeLayout kBridgeLayouts[] {
         {"NVIDIA RTX Remix bridge (API 0.5.1)", SlotMask({1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12}), 7, 8, 9, 10, kNoSlot,
-            false},
+            false, 1, 2, 3, 4, 6},
         {"Remix Plus bridge (API 0.6.4, a build from before 2026-06-28)",
-            SlotMask({1, 2, 3, 5, 8, 9, 11, 12, 13, 18, 19, 30, 31, 33, 34, 36, 40}), 9, 11, 12, 13, 36, false},
+            SlotMask({1, 2, 3, 5, 8, 9, 11, 12, 13, 18, 19, 30, 31, 33, 34, 36, 40}), 9, 11, 12, 13, 36, false, 1, 2, 3,
+            5, 8},
         {"Remix Plus bridge (API 0.1000.0)", SlotMask({1, 2, 3, 5, 7, 8, 10, 11, 12, 17, 18, 30, 31, 33, 34, 36, 40}),
-            8, 10, 11, 12, 36, true},
+            8, 10, 11, 12, 36, true, 1, 2, 3, 5, 7},
     };
 
     // The last entry must describe the vendored header itself, and does.
@@ -703,6 +686,11 @@ namespace
     static_assert(offsetof(remixapi_Interface, SetConfigVariable) == 12 * sizeof(AnyFn), "remix_c.h layout changed");
     static_assert(offsetof(remixapi_Interface, SetGameValue) == 36 * sizeof(AnyFn), "remix_c.h layout changed");
     static_assert(offsetof(remixapi_Interface, GetGameValue) == 40 * sizeof(AnyFn), "remix_c.h layout changed");
+    static_assert(offsetof(remixapi_Interface, CreateMaterial) == 1 * sizeof(AnyFn), "remix_c.h layout changed");
+    static_assert(offsetof(remixapi_Interface, DestroyMaterial) == 2 * sizeof(AnyFn), "remix_c.h layout changed");
+    static_assert(offsetof(remixapi_Interface, CreateMesh) == 3 * sizeof(AnyFn), "remix_c.h layout changed");
+    static_assert(offsetof(remixapi_Interface, DestroyMesh) == 5 * sizeof(AnyFn), "remix_c.h layout changed");
+    static_assert(offsetof(remixapi_Interface, DrawInstance) == 7 * sizeof(AnyFn), "remix_c.h layout changed");
 } // namespace
 
 static const BridgeLayout* IdentifyBridge(const AnyFn (&slots)[kMaxSlots])
@@ -839,6 +827,12 @@ void agiDX9RemixApiInit()
         ? reinterpret_cast<PFN_remixapi_SetGameValue>(slots[layout->SetGameValue])
         : nullptr;
     s_update_in_place = layout->UpdateInPlace;
+
+    s_scene.CreateMaterial = reinterpret_cast<PFN_remixapi_CreateMaterial>(slots[layout->CreateMaterial]);
+    s_scene.DestroyMaterial = reinterpret_cast<PFN_remixapi_DestroyMaterial>(slots[layout->DestroyMaterial]);
+    s_scene.CreateMesh = reinterpret_cast<PFN_remixapi_CreateMesh>(slots[layout->CreateMesh]);
+    s_scene.DestroyMesh = reinterpret_cast<PFN_remixapi_DestroyMesh>(slots[layout->DestroyMesh]);
+    s_scene.DrawInstance = reinterpret_cast<PFN_remixapi_DrawInstance>(slots[layout->DrawInstance]);
     s_active = true;
 
     // Only now start paying for the harvest: the glow registry, its per-frame ageing and each glow
@@ -864,6 +858,15 @@ void agiDX9RemixApiInit()
 bool agiDX9RemixApiActive()
 {
     return s_active;
+}
+
+const agiDX9RemixSceneApi* agiDX9RemixApiScene()
+{
+    if (!s_active || !s_scene.CreateMaterial || !s_scene.DestroyMaterial || !s_scene.CreateMesh ||
+        !s_scene.DestroyMesh || !s_scene.DrawInstance)
+        return nullptr;
+
+    return &s_scene;
 }
 
 bool agiDX9RemixApiSetConfig(const char* key, const char* value)
