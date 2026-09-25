@@ -1043,8 +1043,49 @@ void agiResetReflectStats()
 
 b32 agiMeshSet::DrawLit(agiMeshLighter lighter, u32 flags, u32* colors)
 {
+    // No lighter: the LOW lighting setting, where fix_lighting (mmcity/cullcity.cpp) clears both
+    // mmInstance lighters. The original forwards straight to Draw(flags) here, and Draw() colours
+    // the mesh with its OWN Colors - so `colors` is thrown away. For most callers that loses nothing,
+    // because they pass null. Traffic does not: aiVehicleInstance::Draw hands each car's paint in
+    // as `colors` (its per-LOD colour table, game.asm ~98700), over a body mesh whose own colours
+    // are a neutral grey. So at LOW every randomly painted car came out grey.
+    //
+    // Unlit is still what LOW asks for, so this draws exactly what Draw() would, with the caller's
+    // colours in place of the mesh's.
     if (!lighter)
-        return Draw(flags);
+    {
+        if (!colors)
+            return Draw(flags);
+
+        bool drawn = false;
+
+        if (LockIfResident())
+        {
+            if (Pipe()->SupportsNativeTransform() && NativePathEnabled(NATIVE_DRAW))
+            {
+                drawn = DrawNativeTransform(flags, false, nullptr, colors, /*unlit=*/true);
+
+                // Same contract as the lit hardware branch below: aiVehicleInstance::Draw follows a
+                // successful DrawLit with SphereMap(), which reads CPU scratch this path never
+                // writes. Report "not drawn" so it skips the overlay - see the note there.
+                if (drawn && agiRQ.SphMap)
+                    drawn = false;
+            }
+            else if (Geometry(flags, Vertices, Planes) <= 0xFF)
+            {
+                FirstPass(colors, TexCoords, 0xFFFFFFFF);
+                drawn = true;
+            }
+
+            Unlock();
+        }
+        else
+        {
+            PageIn();
+        }
+
+        return drawn;
+    }
 
     // City geometry (building facades, ground/road, animated set pieces) reaches the renderer
     // through here, and it is the bulk of the scene - so this is the branch that decides whether
@@ -2689,7 +2730,7 @@ f32 agiGlowLightReach(f32 flare_half_extent)
 }
 
 void agiAddGlowLightRGB(const Vector3& position, const Vector3& tint, f32 radius, agiTexDef* texture, f32 u, f32 v,
-    const Vector3& direction, f32 cone_angle)
+    const Vector3& direction, f32 cone_angle, const Vector3* local)
 {
     if ((tint.x <= 0.0f) && (tint.y <= 0.0f) && (tint.z <= 0.0f))
         return;
@@ -2710,7 +2751,32 @@ void agiAddGlowLightRGB(const Vector3& position, const Vector3& tint, f32 radius
     // 0.9 m. Prediction absorbs the motion, so this only has to cover acceleration - and keeping it
     // well under the ~1.5 m spacing between a car's two tail lights stops them trading slots frame
     // to frame, which is what made them flicker at speed.
-    constexpr f32 kMatchDistSq = 0.81f;
+    //
+    // That radius is still what a flare without a model-space position (see below) is matched with.
+    constexpr f32 kMatchDist = 0.9f;
+    constexpr f32 kMatchDistSq = kMatchDist * kMatchDist;
+
+    // IDENTITY BY MODEL-SPACE POSITION, WHEN THE HARVEST KNOWS IT.
+    //
+    // Prediction alone was not enough. It assumes every frame is the same length and that the lamp
+    // was seen exactly one frame ago, and a racing game breaks both: frame times vary, and a glow
+    // mesh can miss a frame to an LOD change or a cull. At speed a car covers a metre or more per
+    // frame, so either leaves a residual past the 0.9 m radius. The lamp is then not recognised, it
+    // gets a fresh slot - a new Remix light - and the slot it left behind lives out its fade at its
+    // last position: a light hanging back from the car, and only when it is going fast. That was the
+    // "lights fall behind when you speed up".
+    //
+    // A lamp's position in its owner's own space never moves: a tail light is at the same point on
+    // the car in every frame. So when both sides carry one, a slot is only a candidate if it is the
+    // same model-space point (kLocalMatchDist - lamps of one car sit further apart than that, and
+    // lamps closer than that use different glow sheets), and once that holds, the world-space radius
+    // can grow with the lamp's speed without the risk it used to carry: it can no longer make two
+    // lamps of the same car trade places. What it can still confuse is two cars of the same model
+    // with the same lamp inside the grown radius of each other, which is rare, and then only for
+    // the frame they are that close. The radius is capped so a lamp cannot be claimed from across a
+    // junction.
+    constexpr f32 kLocalMatchDist = 0.2f;
+    constexpr f32 kMaxTrackedMatchDist = 12.0f;
 
     // Kind switches are applied here, before a slot is claimed, so a disabled kind occupies neither
     // a pool entry nor a cell-grid bucket. The flare itself still draws - these settings control
@@ -2719,7 +2785,7 @@ void agiAddGlowLightRGB(const Vector3& position, const Vector3& tint, f32 radius
     if (!agiGlowKindEnabled(agiClassifyGlowKind(texture ? texture->Tex.Name : nullptr, tint)))
         return;
 
-    f32 best_dist_sq = kMatchDistSq;
+    f32 best_dist_sq = kMaxTrackedMatchDist * kMaxTrackedMatchDist;
     agiGlowLight* slot = nullptr;
     bool fresh = false;
 
@@ -2730,10 +2796,33 @@ void agiAddGlowLightRGB(const Vector3& position, const Vector3& tint, f32 radius
         if ((candidate.Texture != texture) || (candidate.Age == 0))
             continue;
 
-        const Vector3 predicted = candidate.Position + candidate.Velocity;
+        // Frames since the slot was last refreshed: agiUpdateGlowLights ages every slot at the start
+        // of the frame, so one seen last frame reads 1 here. Velocity is per frame, so a lamp that
+        // missed a frame has moved twice as far as one step predicts.
+        const f32 frames = static_cast<f32>(candidate.Age);
+        const Vector3 predicted = candidate.Position + (candidate.Velocity * frames);
         const f32 dist_sq = (predicted - position).Mag2();
 
-        if (dist_sq < best_dist_sq)
+        f32 limit_sq = kMatchDistSq;
+
+        if (local && candidate.HasLocal)
+        {
+            if ((candidate.Local - *local).Mag2() > (kLocalMatchDist * kLocalMatchDist))
+                continue;
+
+            // Slack in proportion to how far the lamp travels in the time since it was seen - a frame
+            // taking half as long again as the last one leaves half a step of residual.
+            const f32 step = std::sqrt(candidate.Velocity.Mag2()) * frames;
+            const f32 limit = std::min(kMatchDist + step, kMaxTrackedMatchDist);
+            limit_sq = limit * limit;
+        }
+        else if (local || candidate.HasLocal)
+        {
+            // One route knows its model-space position and the other does not: not the same flare.
+            continue;
+        }
+
+        if ((dist_sq < limit_sq) && (dist_sq < best_dist_sq))
         {
             best_dist_sq = dist_sq;
             slot = &candidate;
@@ -2773,7 +2862,10 @@ void agiAddGlowLightRGB(const Vector3& position, const Vector3& tint, f32 radius
     //
     // Keyed on `fresh`, not on the slot's texture matching: an evicted slot can hold a different
     // light drawn with the same sheet, and its old position is no history of this one.
-    slot->Velocity = fresh ? Vector3 {0.0f, 0.0f, 0.0f} : (position - slot->Position);
+    //
+    // Per frame, averaged over the frames since the slot was last seen (its Age, not yet reset).
+    slot->Velocity = fresh ? Vector3 {0.0f, 0.0f, 0.0f}
+                           : ((position - slot->Position) * (1.0f / static_cast<f32>(std::max<u32>(slot->Age, 1))));
 
     slot->Position = position;
     slot->Tint = tint;
@@ -2787,6 +2879,8 @@ void agiAddGlowLightRGB(const Vector3& position, const Vector3& tint, f32 radius
     slot->Age = 0;
     slot->Direction = direction;
     slot->ConeAngle = cone_angle;
+    slot->Local = local ? *local : Vector3 {0.0f, 0.0f, 0.0f};
+    slot->HasLocal = local ? 1u : 0u;
 
     if (fresh)
     {
@@ -2882,7 +2976,8 @@ void agiUpdateGlowLights()
     agiGlowCardsHarvested = 0;
 }
 
-void agiAddGlowLight(const Vector3& position, u32 color, f32 scale, agiTexDef* texture, f32 u, f32 v)
+void agiAddGlowLight(
+    const Vector3& position, u32 color, f32 scale, agiTexDef* texture, f32 u, f32 v, const Vector3* local)
 {
     // The billboard's own alpha is its current brightness - glows fade with distance and with
     // whatever the caller is animating (traffic lights cycling, headlight glow with the beam).
@@ -2902,7 +2997,7 @@ void agiAddGlowLight(const Vector3& position, u32 color, f32 scale, agiTexDef* t
     // stands for - a street lamp's corona is a metre or so across while it lights several metres of
     // pavement. agiGlowLightReach() makes that conversion, and is shared with the glow-mesh route so
     // the same fixture gets the same reach whichever way the engine happens to draw it.
-    agiAddGlowLightRGB(position, rgb, agiGlowLightReach(scale), texture, u, v);
+    agiAddGlowLightRGB(position, rgb, agiGlowLightReach(scale), texture, u, v, Vector3 {0.0f, 0.0f, 0.0f}, 0.0f, local);
 }
 
 void agiMeshSet::DrawCard(Vector3& position, f32 scale, u32 rotation, u32 color, u32 frame)
@@ -3026,7 +3121,8 @@ void agiMeshSet::DrawCard(Vector3& position, f32 scale, u32 rotation, u32 color,
             Vector3 world_position;
             world_position.Dot(position + agiGlowLocalOffset(tuning, position), view_params.World);
 
-            agiAddGlowLight(world_position, color, scale, card_texture, u * 0.25f, v * 0.25f);
+            // The card's own position is its model-space identity - see agiAddGlowLightRGB.
+            agiAddGlowLight(world_position, color, scale, card_texture, u * 0.25f, v * 0.25f, &position);
         }
     }
 

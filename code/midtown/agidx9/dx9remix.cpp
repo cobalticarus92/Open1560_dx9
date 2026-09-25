@@ -131,6 +131,10 @@ namespace
     // 2 cm is well under anything visible in a path-traced shadow; 3% is under what a viewer notices
     // in a light's brightness, and still lets a fade reach zero in its six frames.
     constexpr f32 kMoveEpsilonSq = 0.02f * 0.02f;
+
+    // Per-frame movement above which a light not refreshed this frame is stale - about 3 m/s at 60
+    // frames a second. See ResolveGlow.
+    constexpr f32 kStaleMoveSq = 0.05f * 0.05f;
     constexpr f32 kRadianceEpsilon = 0.03f;
 
     // An aimed light is re-sent when its beam swings by more than about 1.5 degrees: well under what
@@ -301,6 +305,14 @@ static bool ResolveGlow(const agiGlowLight& glow, f32 radius, Candidate& out)
     const f32 fade = agiGlowLightFade(glow.Age);
 
     if (fade <= 0.0f)
+        return false;
+
+    // A MOVING light whose sprite was not drawn this frame is not sent. Its position is where the
+    // lamp was, not where it is: the registry keeps such a slot alive for a few frames to ride out a
+    // cull or LOD hiccup, which is right for a street lamp, but for a car at speed it is a light left
+    // hanging in the air behind it. Dropping it for the frame costs a flicker at worst; sending it
+    // is visibly wrong. Age 0 means refreshed this frame - submission runs after every draw.
+    if ((glow.Age > 0) && (glow.Velocity.Mag2() > kStaleMoveSq))
         return false;
 
     Vector3 color = glow.Tint * fade;

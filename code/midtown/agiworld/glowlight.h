@@ -85,6 +85,14 @@ struct agiGlowLight
     // measured off the same mesh, and means nothing when Direction is zero.
     Vector3 Direction;
     f32 ConeAngle;
+
+    // Where the flare sits in its owner's own space - the car or the lamp model - before the owner's
+    // world transform, when the harvest knows it (HasLocal). It is what identifies a lamp from frame
+    // to frame: a car's tail light is at the same model-space point in every frame however fast the
+    // car moves, while its world position jumps a metre or more per frame at speed. See
+    // agiAddGlowLightRGB.
+    Vector3 Local;
+    u32 HasLocal;
 };
 
 // Whether the glow harvest runs at all. Off until a consumer needs it: the harvest, the registry's
@@ -213,7 +221,11 @@ bool agiGlowKindEnabled(agiGlowKind kind);
 f32 agiClassifyGlowIntensity(const char* name, const Vector3& color);
 
 // Called by agiMeshSet::DrawCard for each AlphaGlow billboard it submits.
-void agiAddGlowLight(const Vector3& position, u32 color, f32 scale, agiTexDef* texture, f32 u, f32 v);
+//
+// `local` is the flare's position in its owner's own space, before the world transform - see
+// agiGlowLight::Local. Null when not known.
+void agiAddGlowLight(
+    const Vector3& position, u32 color, f32 scale, agiTexDef* texture, f32 u, f32 v, const Vector3* local = nullptr);
 
 // Same, for glows submitted as world-space GEOMETRY rather than as billboards.
 //
@@ -234,7 +246,7 @@ void agiAddGlowLight(const Vector3& position, u32 color, f32 scale, agiTexDef* t
 // `direction` and `cone_angle` make it an aimed light - see agiGlowLight::Direction. Zero, the
 // default, is a light that shines every way, which is every glow but a headlight.
 void agiAddGlowLightRGB(const Vector3& position, const Vector3& tint, f32 radius, agiTexDef* texture, f32 u, f32 v,
-    const Vector3& direction = Vector3 {0.0f, 0.0f, 0.0f}, f32 cone_angle = 0.0f);
+    const Vector3& direction = Vector3 {0.0f, 0.0f, 0.0f}, f32 cone_angle = 0.0f, const Vector3* local = nullptr);
 
 // Ages the live set and retires lights whose sprite has not been seen for a while.
 // Called once per frame by the pipeline (agidx9/dx9pipe.cpp, BeginFrame).

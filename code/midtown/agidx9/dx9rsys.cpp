@@ -2660,13 +2660,18 @@ static bool HarvestHeadlightBeam(
         // With one lamp, the whole lamp end is its own.
         Vector3 local_lamp = two_lamps ? lamp_halves[lamp].Centre() : lamp_end.Centre();
         local_lamp.z = lamp_z;
+
+        // The lamp's identity from frame to frame - see agiAddGlowLightRGB. Taken before the tuning
+        // offset, which is a presentation choice rather than a different lamp.
+        const Vector3 identity = local_lamp;
+
         local_lamp = local_lamp + agiGlowLocalOffset(tuning, local_lamp);
 
         Vector3 world_lamp;
         world_lamp.Dot(local_lamp, world);
 
-        agiAddGlowLightRGB(
-            world_lamp, tint, world_length, texture, accum_u * inv_verts, accum_v * inv_verts, world_direction, cone);
+        agiAddGlowLightRGB(world_lamp, tint, world_length, texture, accum_u * inv_verts, accum_v * inv_verts,
+            world_direction, cone, &identity);
     }
 
     return true;
@@ -2821,6 +2826,9 @@ static void HarvestWorldGlow(
         if (tuning.HasEnabled && !tuning.Enabled)
             continue;
 
+        // The flare's identity from frame to frame - see agiAddGlowLightRGB. Before the offset.
+        const Vector3 identity = local_centre;
+
         local_centre = local_centre + agiGlowLocalOffset(tuning, local_centre);
 
         Vector3 world_centre;
@@ -2831,7 +2839,7 @@ static void HarvestWorldGlow(
         // with the square of reach, that alone made the same fixture ~3x brighter as a card than as
         // a mesh.
         agiAddGlowLightRGB(world_centre, tint, agiGlowLightReach(flare_size), texture, cluster.AccumU * inv_verts,
-            cluster.AccumV * inv_verts);
+            cluster.AccumV * inv_verts, Vector3 {0.0f, 0.0f, 0.0f}, 0.0f, &identity);
     }
 }
 
