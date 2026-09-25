@@ -37,6 +37,7 @@
 
 #include "dx9bitmap.h"
 #include "dx9context.h"
+#include "dx9meshcache.h"
 #include "dx9remix.h"
 #include "dx9remixsky.h"
 #include "dx9remixwet.h"
@@ -272,6 +273,10 @@ void agiDX9Pipeline::EndGfx()
     agiDX9RemixSkyEndGfx();
     agiDX9RemixWetEndGfx();
 
+    // Device buffers, and geometry of a city that is about to be freed. Before the context, which
+    // parks the device the buffers belong to.
+    agiDX9MeshCacheReleaseAll();
+
     // Same hazard, same reason: this borrows mmCullCity's sphere map, and the arena reset frees the
     // whole city underneath it. mmCullCity::Cull() republishes it for the next city.
     agiNativeCitySphereMap = nullptr;
@@ -317,6 +322,9 @@ void agiDX9Pipeline::BeginFrame()
     remix_frame_sent_ = false;
 
     agiDX9RemixWetBeginFrame();
+
+    // Makes room in the world mesh cache, if it needs it - the only point in a frame it may.
+    agiDX9MeshCacheBeginFrame();
 
     // Keeps the game's sky dome off while RTX Remix Plus draws the sky. See dx9remixsky.cpp.
     agiDX9RemixSkyBeginFrame();
@@ -568,6 +576,7 @@ void agiDX9Pipeline::EndFrame()
             agiDX9DumpAttribution();
             agiDX9RemixApiLogStats(census_frames);
             agiDX9RemixWetLogStats(census_frames);
+            agiDX9MeshCacheLogStats(census_frames, agiDX9Census.WorldCachedCalls, agiDX9Census.WorldCalls);
         }
 
         agiDX9Census = {};

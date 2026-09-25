@@ -104,6 +104,8 @@ These act on the world-space path, so they apply to this backend only.
 
 | Switch | Default | Effect |
 | --- | --- | --- |
+| `-d3d9meshcache <0/1>` | 1 | Keep world meshes on the GPU between frames. A mesh drawn twice is built once, copied into a managed vertex and index buffer, and drawn from there, instead of being rebuilt on the CPU and resent with `DrawIndexedPrimitiveUP` for every texture batch of every frame. Under Remix that also stops the whole city crossing the bridge and being hashed again each frame. Remix sees the same vertices and indices either way, so replacements keep working. The census line `DX9 MESHCACHE` reports how many world draws came from it. |
+| `-d3d9meshcachemb <n>` | 64 | Memory the mesh cache may use, in MB. When full, it drops the meshes drawn least recently. |
 | `-nocull` | off | Disable backface, LOD and distance culling. A path tracer wants closed shells; a back face it never receives is a hole light leaks through. |
 | `-smoothnormals <0/1>` | 1 | Rebuild smooth vertex normals in float. The engine stores normals as an index into a 198-entry table, coarse enough that a facet's corners often quantise to one direction and shade flat. |
 | `-flatnormals` | off | Shade from facet geometry, ignoring stored vertex normals. |
@@ -207,7 +209,7 @@ warning about unknown keys, but nothing reads them at runtime: `-d3d9quality`, `
 
 The renderer writes a fully commented `Open1560_RemixAPI.ini` next to the executable on first run,
 organised around what the game sends to Remix: `[RemixAPI]`, `[GlowReach]`, one section per glow
-kind, `[RemixSky]`, `[Geometry]` and `[Debug]`. Keys outside the glow sections are the switches above,
+kind, `[RemixSky]`, `[RemixWet]`, `[Geometry]`, `[Performance]` and `[Debug]`. Keys outside the glow sections are the switches above,
 applied through the same mechanism, so the command line wins and a setting can be overridden for one
 run without editing the file. Delete it to regenerate it.
 

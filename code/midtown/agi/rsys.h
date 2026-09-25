@@ -54,6 +54,38 @@ struct agiNativeMaterialFx
     const Matrix34* EnvTransform {};
 };
 
+// One texture batch of a cached world mesh: the texture slot it draws with, and its run of indices.
+struct agiNativeMeshBatch
+{
+    u32 Texture;
+    u32 FirstIndex;
+    u32 IndexCount;
+};
+
+// A world mesh as the renderer keeps it - see agiRasterizer::FindNativeMesh. The arrays are the
+// renderer's own copies, laid out exactly as agiMeshSet::DrawNativeTransform builds them: one vertex
+// array for the whole mesh and every batch's indices back to back.
+struct agiNativeCachedMesh
+{
+    agiWorldVtx* Vertices;
+    u32 VertexCount;
+    u16* Indices;
+    u32 IndexCount;
+    agiNativeMeshBatch* Batches;
+    u32 BatchCount;
+
+    // The renderer's own resources for it (agidx9: a vertex and an index buffer), or null.
+    void* RendererData;
+};
+
+// The cached mesh the MeshWorld call in flight was built from, or null for an uncached draw. Set by
+// agiMeshSet::DrawNativeTransform around each MeshWorld call, so the renderer can draw from its own
+// buffers instead of the arrays it is handed. A global for the reason agiNativeReflectivity is:
+// MeshWorld's signature is shared with call sites that know nothing of it. The renderer only trusts
+// it when the arrays it is handed are this mesh's own, which also makes it safe to share between
+// threads. Defined in agiworld/meshrend.cpp.
+extern const agiNativeCachedMesh* agiNativeDrawMesh;
+
 // True while agiMeshSet::DrawLitEnv submits through the hardware path: the draw in flight is road
 // or ground. A global rather than a flag in agiNativeMaterialFx because DrawLitEnv only passes that
 // struct when it has an environment map to apply, and the ground is ground either way - the RTX
@@ -221,6 +253,39 @@ public:
     virtual u32 MaxNativeSkinBones() const
     {
         return 1;
+    }
+
+    // Not part of the original engine/binary - appended after every other virtual, as MeshWorld was.
+    //
+    // A world mesh built once and kept by the renderer, so a mesh drawn every frame is neither rebuilt
+    // on the CPU nor resubmitted in full every frame. See agiNativeCachedMesh. `key` is a hash of
+    // everything the build reads (agiMeshSet::DrawNativeTransform computes it), so geometry that
+    // changes - a dented car, a tinted draw - simply has a new key. Find returns null when the renderer
+    // does not cache, or has not got it. Store may return null too (not seen often enough yet, or no
+    // room), and the caller then draws from its own arrays as before. What either returns stays valid
+    // until the next frame begins. CachesNativeMeshes says whether the key is worth computing at all.
+    virtual bool CachesNativeMeshes()
+    {
+        return false;
+    }
+
+    virtual const agiNativeCachedMesh* FindNativeMesh(u64 key)
+    {
+        (void) key;
+        return nullptr;
+    }
+
+    virtual const agiNativeCachedMesh* StoreNativeMesh(u64 key, const agiWorldVtx* vertices, u32 vertex_count,
+        const u16* indices, u32 index_count, const agiNativeMeshBatch* batches, u32 batch_count)
+    {
+        (void) key;
+        (void) vertices;
+        (void) vertex_count;
+        (void) indices;
+        (void) index_count;
+        (void) batches;
+        (void) batch_count;
+        return nullptr;
     }
 };
 

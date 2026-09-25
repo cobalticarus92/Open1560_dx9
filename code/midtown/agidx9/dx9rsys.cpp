@@ -40,6 +40,7 @@
 
 #include "dx9context.h"
 #include "dx9ffshade.h"
+#include "dx9meshcache.h"
 #include "dx9remix.h"
 #include "dx9remixwet.h"
 #include "dx9shader.h"
@@ -411,6 +412,7 @@ static void DrawMaterialFxPass(IDirect3DDevice9* device, IDirect3DTexture9* text
 
     device->DrawIndexedPrimitiveUP(
         D3DPT_TRIANGLELIST, 0, vertex_count, index_count / 3, indices, D3DFMT_INDEX16, verts, sizeof(DX9ReflectVtx));
+    agiDX9ForgetStreams();
 
     device->SetTexture(0, nullptr);
     device->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
@@ -488,6 +490,7 @@ static void DrawVehicleReflectionPass(IDirect3DDevice9* device, agiWorldVtx* ver
 
             device->DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST, 0, vertex_count, index_count / 3, indices,
                 D3DFMT_INDEX16, vertices, sizeof(agiWorldVtx));
+            agiDX9ForgetStreams();
 
             // Texgen and the stage-0 texture transform must not leak into the next draw - they would
             // silently replace its UVs with reflection vectors.
@@ -600,6 +603,13 @@ struct agiDX9WorldStateCache
 
     DWORD Fvf;
     bool FvfKnown;
+
+    // Stream 0 and the index buffer, as the world mesh cache's draws bind them. A
+    // DrawIndexedPrimitiveUP resets both on the device, so every UP draw inside the rasterizer
+    // forgets them (WorldForgetStreams), and everything outside it drops the whole cache anyway.
+    IDirect3DVertexBuffer9* Stream;
+    IDirect3DIndexBuffer9* Indices;
+    bool StreamsKnown;
 };
 
 static agiDX9WorldStateCache g_WorldCache {};
@@ -744,6 +754,68 @@ static void WorldSetTransform(IDirect3DDevice9* device, D3DTRANSFORMSTATETYPE st
     }
 
     device->SetTransform(state, &matrix);
+}
+
+void agiDX9ForgetStreams()
+{
+    g_WorldCache.StreamsKnown = false;
+}
+
+static void WorldSetStreams(IDirect3DDevice9* device, IDirect3DVertexBuffer9* vb, IDirect3DIndexBuffer9* ib)
+{
+    if (agiDX9StateCacheEnabled() && g_WorldCache.StreamsKnown && (g_WorldCache.Stream == vb) &&
+        (g_WorldCache.Indices == ib))
+        return;
+
+    g_WorldCache.Stream = vb;
+    g_WorldCache.Indices = ib;
+    g_WorldCache.StreamsKnown = true;
+
+    device->SetStreamSource(0, vb, 0, sizeof(agiWorldVtx));
+    device->SetIndices(ib);
+}
+
+// The draw call of a MeshWorld submission. When the arrays it was handed are a cached mesh's own
+// (agiNativeDrawMesh, set by agiMeshSet::DrawNativeTransform), the geometry is already on the
+// device and only the draw goes out; otherwise it is DrawIndexedPrimitiveUP as it always was.
+//
+// The same vertex range and the same index values either way - base vertex 0, all of the mesh's
+// vertices, this batch's run of indices - so RTX Remix, which hashes what a draw references, sees
+// identical geometry from both, and a mesh that moves into the cache keeps its replacements.
+//
+// The cached mesh is only trusted when the pointers it is handed are its own. That makes the
+// global safe however many threads draw: a draw that did not come from the cache cannot match.
+static void WorldDrawTriangles(
+    IDirect3DDevice9* device, agiWorldVtx* vertices, i32 vertex_count, u16* indices, i32 index_count)
+{
+    if (const agiNativeCachedMesh* cached = agiNativeDrawMesh;
+        cached && (vertices == cached->Vertices) && (static_cast<u32>(vertex_count) == cached->VertexCount))
+    {
+        const uintptr_t first_byte =
+            reinterpret_cast<uintptr_t>(indices) - reinterpret_cast<uintptr_t>(cached->Indices);
+        const u32 first_index = static_cast<u32>(first_byte / sizeof(u16));
+
+        IDirect3DVertexBuffer9* vb = nullptr;
+        IDirect3DIndexBuffer9* ib = nullptr;
+
+        if ((first_byte % sizeof(u16) == 0) && (first_index < cached->IndexCount) &&
+            (static_cast<u32>(index_count) <= cached->IndexCount - first_index) &&
+            agiDX9MeshCacheBuffers(device, *cached, &vb, &ib))
+        {
+            WorldSetStreams(device, vb, ib);
+
+            device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, static_cast<UINT>(vertex_count), first_index,
+                static_cast<UINT>(index_count / 3));
+
+            ++agiDX9Census.WorldCachedCalls;
+            return;
+        }
+    }
+
+    device->DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST, 0, static_cast<UINT>(vertex_count),
+        static_cast<UINT>(index_count / 3), indices, D3DFMT_INDEX16, vertices, sizeof(agiWorldVtx));
+
+    agiDX9ForgetStreams();
 }
 
 static void WorldSetFVF(IDirect3DDevice9* device, DWORD fvf)
@@ -1833,6 +1905,9 @@ void agiDX9Rasterizer::DrawMesh(u32 prim_type, agiVtx* vertices, i32 vertex_coun
     device->DrawIndexedPrimitiveUP(static_cast<D3DPRIMITIVETYPE>(prim_type), 0, vertex_count, primitive_count, indices,
         D3DFMT_INDEX16, draw_verts, sizeof(agiScreenVtx));
 
+    // Resets stream 0 and the index buffer on the device. See WorldSetStreams.
+    agiDX9ForgetStreams();
+
     // Put the stage back, or every following screen draw inherits TFACTOR - including the HUD, which
     // is drawn after EndScene and would go solid magenta with it.
     if (mark_screen)
@@ -2892,6 +2967,25 @@ static void HarvestWorldGlow(
 // its palette - it only means the pedestrian is one of the things the shader does not draw.
 //
 // Capped at 256 because that is the width of the index the vertex carries - one byte.
+bool agiDX9Rasterizer::CachesNativeMeshes()
+{
+    return agiDX9MeshCacheEnabled();
+}
+
+const agiNativeCachedMesh* agiDX9Rasterizer::FindNativeMesh(u64 key)
+{
+    return agiDX9MeshCacheEnabled() ? agiDX9MeshCacheFind(key) : nullptr;
+}
+
+const agiNativeCachedMesh* agiDX9Rasterizer::StoreNativeMesh(u64 key, const agiWorldVtx* vertices, u32 vertex_count,
+    const u16* indices, u32 index_count, const agiNativeMeshBatch* batches, u32 batch_count)
+{
+    if (!agiDX9MeshCacheEnabled())
+        return nullptr;
+
+    return agiDX9MeshCacheStore(key, vertices, vertex_count, indices, index_count, batches, batch_count);
+}
+
 u32 agiDX9Rasterizer::MaxNativeSkinBones() const
 {
     if (PARAM_noskin.get_or(false))
@@ -3282,8 +3376,7 @@ bool agiDX9Rasterizer::MeshWorld(agiWorldVtx* vertices, i32 vertex_count, u16* i
 
         shader->Setup(device, info);
 
-        device->DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST, 0, vertex_count, index_count / 3, indices, D3DFMT_INDEX16,
-            vertices, sizeof(agiWorldVtx));
+        WorldDrawTriangles(device, vertices, vertex_count, indices, index_count);
 
         // Back to fixed function before anything else touches the device. The reflection pass below
         // and every pretransformed draw after this point are FF, and a left-over vertex shader
@@ -3482,11 +3575,12 @@ bool agiDX9Rasterizer::MeshWorld(agiWorldVtx* vertices, i32 vertex_count, u16* i
 
         device->DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST, 0, vertex_count, primitive_count, indices, D3DFMT_INDEX16,
             skin_verts, sizeof(DX9SkinVtx));
+
+        agiDX9ForgetStreams();
     }
     else
     {
-        device->DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST, 0, vertex_count, primitive_count, indices, D3DFMT_INDEX16,
-            vertices, sizeof(agiWorldVtx));
+        WorldDrawTriangles(device, vertices, vertex_count, indices, index_count);
     }
 
     // Per-fragment sun, added on top of the base pass's ambient + fills. Before the material second

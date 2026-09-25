@@ -43,6 +43,7 @@ define_dummy_symbol(agiworld_meshrend);
 #include "vector7/matrix44.h"
 
 #include <cstdlib>
+#include <cstring>
 
 // #ifdef ARTS_ENABLE_KNI
 // #    define CLIP_ALL_TO_SCREEN
@@ -1247,6 +1248,9 @@ agiTexDef* agiNativeReflectionTex = nullptr;
 // See agi/rsys.h. Scoped to the one DrawNativeTransform call in DrawLitEnv.
 bool agiNativeGroundDraw = false;
 
+// See agi/rsys.h. Scoped to each MeshWorld call DrawNativeTransform makes from a cached mesh.
+const agiNativeCachedMesh* agiNativeDrawMesh = nullptr;
+
 void agiMeshSet::DrawLitSph(agiMeshLighter lighter, agiTexDef* sph_map, u32 flags)
 {
     // Vehicle bodies. DrawLit() now takes the hardware-transform path here too, which is what puts
@@ -1751,6 +1755,67 @@ void agiResetMeshNormalStats()
     agiMeshNormalTrisFlat = 0;
 }
 
+// The key a world mesh is cached under - see agiRasterizer::FindNativeMesh. It has to cover every
+// input the build in DrawNativeTransform reads, because a cached mesh is drawn INSTEAD of that build:
+// anything left out would let two meshes that build differently share one entry. So it is a hash of
+// the arrays themselves rather than of the agiMeshSet pointer, which also makes it immune to the two
+// ways a pointer lies here - a mesh freed and another loaded at the same address, and a car body
+// whose vertices are dented in place.
+//
+// Two independent 32-bit lanes rather than one 64-bit one, because this is a 32-bit build and a
+// 64-bit multiply is a library call there. Each lane is an ordinary multiply-rotate mix; together
+// they make an accidental collision between two real meshes vanishingly unlikely. Hashing is one
+// linear read of data the build would read anyway, and a hit skips the build, its normal smoothing,
+// its sort and - on the device side - the upload of the whole thing.
+class NativeMeshHasher
+{
+public:
+    void Mix(u32 word)
+    {
+        lane_a_ = Rotl((lane_a_ ^ word) * 0x9E3779B1u, 13);
+        lane_b_ = Rotl((lane_b_ + word) * 0x85EBCA77u, 17) ^ lane_a_;
+    }
+
+    void Bytes(const void* data, u32 size)
+    {
+        Mix(size);
+
+        if (data == nullptr)
+            return;
+
+        const u8* bytes = static_cast<const u8*>(data);
+        const u32 words = size / 4;
+
+        for (u32 i = 0; i < words; ++i)
+        {
+            u32 word;
+            std::memcpy(&word, bytes + i * 4, sizeof(word));
+            Mix(word);
+        }
+
+        if (const u32 tail = size & 3u)
+        {
+            u32 word = 0;
+            std::memcpy(&word, bytes + words * 4, tail);
+            Mix(word);
+        }
+    }
+
+    u64 Key() const
+    {
+        return (static_cast<u64>(lane_a_) << 32) | lane_b_;
+    }
+
+private:
+    static u32 Rotl(u32 value, u32 shift)
+    {
+        return (value << shift) | (value >> (32 - shift));
+    }
+
+    u32 lane_a_ {0x2545F491u};
+    u32 lane_b_ {0x6A09E667u};
+};
+
 static void SmoothAdjunctNormals(Vector3* ARTS_RESTRICT out_normals, const u16* ARTS_RESTRICT vertex_indices,
     const u8* ARTS_RESTRICT normals, u32 adjunct_count, Vector3* ARTS_RESTRICT accum, u32 vertex_count)
 {
@@ -1965,13 +2030,12 @@ b32 agiMeshSet::DrawNativeTransform(u32 flags, bool static_lighting, const agiNa
     //    builds its own chains, and are never reached from this path (see DrawLitEnv).
     //
     // What is left is a pure function of SurfaceIndices and TextureIndices, both immutable mesh
-    // data, so a given mesh submits byte-identical indices for the life of the process. There is
-    // deliberately no cross-frame cache of the result: agiMeshSet's layout is fixed by
-    // check_size(agiMeshSet, 0x64) so the arrays cannot live on the mesh, and a side table keyed on
-    // the mesh pointer would have to outguess a lifetime the assembly partly owns - for a saving of
-    // one linear pass. If this backend ever grows device-owned dynamic vertex/index buffers in
-    // place of DrawIndexedPrimitiveUP, those are the right owner for it: they would have exactly
-    // the BeginGfx/EndGfx lifetime such a cache needs.
+    // data, so a given mesh submits byte-identical indices for the life of the process. That is also
+    // what lets the renderer keep a built mesh across frames (see the cache below): agiMeshSet's
+    // layout is fixed by check_size(agiMeshSet, 0x64), so the result cannot live on the mesh, and a
+    // side table keyed on the mesh pointer would have to outguess a lifetime the assembly partly
+    // owns - so the renderer owns it, keyed on the content, with its device's BeginGfx/EndGfx
+    // lifetime.
     //
     // The facet index is emitted as u16 because the engine's own facet storage is i16 (nextFacet is
     // i16[16384]), so a mesh above that has never been submittable by any path here.
@@ -2004,6 +2068,171 @@ b32 agiMeshSet::DrawNativeTransform(u32 flags, bool static_lighting, const agiNa
 
         return false;
     };
+
+    const agiViewParameters& view_params = ViewParams();
+
+    // Meshes loaded without MESH_SET_NORMAL have no normals at all (mmInstance::InitMeshes only
+    // requests them for COLLIDER/MOVER instances, so most static scenery and the low-detail LODs
+    // go without). Those draw unlit from their baked Colors on the CPU path, and do the same here -
+    // the normal field is filler and MeshWorld() is told to disable hardware lighting, so nothing
+    // reads it. Without this they would fall back to CPU pretransform and stay invisible to Remix.
+    const bool has_normals = (Normals != nullptr);
+    const bool hardware_lighting = has_normals && !unlit;
+    const Vector3 filler_normal {0.0f, 1.0f, 0.0f};
+
+    const u32* src_colors = base_colors ? base_colors : Colors;
+
+    // -flatnormals. Throw away the mesh's per-vertex normals and shade from the geometry instead.
+    //
+    // The stored normals are the least trustworthy thing in a .bms. They are 8-bit indices into a
+    // 198-entry table (agiworld/packnorm.h), so they are coarse to begin with, and they are stored
+    // per ADJUNCT while the positions are per VERTEX - so a model with coincident or otherwise
+    // stray vertices can carry a normal that points nowhere near the surface it is attached to.
+    // SmoothAdjunctNormals makes that worse rather than better where it fires, because it averages
+    // across every adjunct sharing a vertex position: two surfaces that merely happen to touch get
+    // blended into each other, which is the "wrongly shaded in some areas" look on city geometry.
+    //
+    // Flat mode sidesteps the stored normals entirely. Each facet gets the true normal of its own
+    // plane, computed from its own corner positions, and its corners are emitted as UNSHARED
+    // vertices so no facet can contaminate its neighbour. Nothing about the result depends on the
+    // vertex data being sane - only on the triangle having area.
+    //
+    // The sign still comes from the stored normals, deliberately: a cross product only defines the
+    // plane, not which side is outward, and the winding convention here is not something to bet on
+    // (see the long note in agidx9's MeshWorld about exactly that). Agreeing with the average of the
+    // facet's own stored normals keeps the artist's intended facing while replacing the direction,
+    // and a stray normal cannot flip the result because the vote is over the whole facet.
+    //
+    // Off by default. It is a real change in look - genuinely faceted, no smooth shading anywhere -
+    // and on well-formed meshes the stored normals are better.
+    const u32 flat_capacity = SurfaceCount * 4;
+
+    const bool flat_shading = has_normals && hardware_lighting && PARAM_flat_normals.get_or(false) &&
+        (flat_capacity <= kFlatVertexCap) && (SurfaceCount > 0);
+
+    // Vehicle chrome. DrawLitSph cannot pass an fx down - it reaches here through DrawLit, whose
+    // signature the assembly owns - so it leaves the subject in agiNativeReflectivity /
+    // agiNativeReflectionTex and this assembles the fx. Same reason agiNativeDrawRadius exists.
+    //
+    // Gated on has_normals, and that gate is the whole point rather than defensive coding: the
+    // sphere map is indexed by the reflection of the eye vector about the vertex normal, so a mesh
+    // with no normals would reflect the same texel over its entire surface - a flat wash of one
+    // colour, which looks worse than no chrome at all.
+    agiNativeMaterialFx native_fx {};
+    const agiNativeMaterialFx* effective_fx = fx;
+
+    // Diagnostics. "Offered" counts draws that arrived with a sphere map selected, so
+    // offered == 0 means no caller is asking for chrome at all and the problem is upstream of here;
+    // offered > 0 with drawn == 0 means it is being asked for and refused, and the reason is the
+    // missing-normals count next to it.
+    const bool reflect_offered = !effective_fx && agiNativeReflectionTex && (agiNativeReflectivity > 0.0f);
+
+    if (reflect_offered && !has_normals)
+        ++agiReflectSkipNoNormals;
+
+    if (reflect_offered && has_normals)
+    {
+        ++agiReflectDraws;
+
+        native_fx.ReflectionTexture = agiNativeReflectionTex;
+        native_fx.ReflectionAmount = agiNativeReflectivity * PARAM_reflect_amount.get_or(0.35f);
+        native_fx.FresnelBias = PARAM_reflect_fresnel_bias.get_or(1.0f);
+        native_fx.FresnelScale = PARAM_reflect_fresnel_scale.get_or(0.0f);
+        native_fx.SpecularBoost = PARAM_reflect_specular.get_or(0.0f);
+
+        effective_fx = &native_fx;
+    }
+
+    // Submits a built mesh: one MeshWorld call per texture batch, all sharing one vertex array.
+    // `cached` is the renderer's copy these arrays belong to, if they are one - see agiNativeDrawMesh.
+    const auto submit = [&](agiWorldVtx* verts, u32 vertex_count, u16* indices, const agiNativeMeshBatch* batches,
+                            u32 batch_total, const agiNativeCachedMesh* cached,
+                            const agiNativeSkinPalette* draw_skin) -> b32 {
+        bool drawn = false;
+        u32 submitted_indices = 0;
+
+        for (u32 i = 0; i < batch_total; ++i)
+        {
+            const agiNativeMeshBatch& batch = batches[i];
+
+            agiTexDef* tex_def = TexCoords ? Textures[CurrentMeshSetVariant][batch.Texture] : nullptr;
+
+            auto old_texture = agiCurState.SetTexture(tex_def);
+
+            agiNativeDrawMesh = cached;
+
+            if (RAST->MeshWorld(verts, static_cast<i32>(vertex_count), indices + batch.FirstIndex,
+                    static_cast<i32>(batch.IndexCount), skin ? skin->Bones[0] : view_params.World, view_params.View,
+                    view_params, static_lighting, effective_fx, hardware_lighting, draw_skin))
+            {
+                drawn = true;
+                submitted_indices += batch.IndexCount;
+            }
+
+            agiNativeDrawMesh = nullptr;
+
+            agiCurState.SetTexture(old_texture);
+        }
+
+        if (drawn)
+        {
+            const u32 tris = submitted_indices / 3;
+
+            ++agiMeshNormalDraws;
+            agiMeshNormalTris += tris;
+
+            if (!has_normals)
+            {
+                ++agiMeshNormalDrawsFlat;
+                agiMeshNormalTrisFlat += tris;
+            }
+        }
+
+        return drawn;
+    };
+
+    // The world mesh cache - see agiRasterizer::FindNativeMesh. Most of what this function is handed
+    // in a frame is the city, and the city does not change: the same cells, the same props, built into
+    // the same bytes as last frame and the frame before. Built on the CPU every time, and sent to the
+    // device in full every time, once per texture batch - that resubmission is what a frame spends
+    // most of its time on, and under RTX Remix every byte of it also crosses the bridge and is hashed
+    // again on the other side. A cached mesh is built once, lives on the device, and costs a hash and
+    // a few draw calls from then on.
+    //
+    // Not for a skinned model, whose submission carries a per-draw palette slot table, nor under
+    // -nativecpucull, whose facet set depends on the camera. The build is otherwise a pure function of
+    // what the key covers.
+    const bool cacheable = !skin && !cpu_cull && RAST->CachesNativeMeshes();
+    const bool smooth_wanted = PARAM_smooth_normals.get_or(true);
+    u64 cache_key = 0;
+
+    if (cacheable)
+    {
+        NativeMeshHasher hasher;
+
+        hasher.Mix(VertexCount);
+        hasher.Mix(AdjunctCount);
+        hasher.Mix(SurfaceCount);
+        hasher.Mix(TextureCount);
+        hasher.Mix((flat_shading ? 1u : 0u) | (smooth_wanted ? 2u : 0u) | (has_normals ? 4u : 0u) |
+            (TexCoords ? 8u : 0u) | (src_colors ? 16u : 0u));
+
+        hasher.Bytes(Vertices, VertexCount * sizeof(Vector3));
+        hasher.Bytes(VertexIndices, AdjunctCount * sizeof(u16));
+        hasher.Bytes(Normals, has_normals ? AdjunctCount * sizeof(u8) : 0u);
+        hasher.Bytes(TexCoords, TexCoords ? AdjunctCount * sizeof(Vector2) : 0u);
+        hasher.Bytes(src_colors, src_colors ? AdjunctCount * sizeof(u32) : 0u);
+        hasher.Bytes(SurfaceIndices, SurfaceCount * 4 * sizeof(u16));
+        hasher.Bytes(TextureIndices, SurfaceCount * sizeof(u8));
+
+        cache_key = hasher.Key();
+
+        if (const agiNativeCachedMesh* cached = RAST->FindNativeMesh(cache_key))
+        {
+            return submit(cached->Vertices, cached->VertexCount, cached->Indices, cached->Batches, cached->BatchCount,
+                cached, nullptr);
+        }
+    }
 
     const u32 batch_count = TextureCount + 1u;
 
@@ -2071,47 +2300,6 @@ b32 agiMeshSet::DrawNativeTransform(u32 flags, bool static_lighting, const agiNa
     // needs fixing, the fix is a buffer that is neither the game heap nor the stack - a
     // module-level array sized once for the worst case, or device-owned dynamic D3D9 vertex and
     // index buffers - not std::vector.
-    //
-    const agiViewParameters& view_params = ViewParams();
-
-    // Meshes loaded without MESH_SET_NORMAL have no normals at all (mmInstance::InitMeshes only
-    // requests them for COLLIDER/MOVER instances, so most static scenery and the low-detail LODs
-    // go without). Those draw unlit from their baked Colors on the CPU path, and do the same here -
-    // the normal field is filler and MeshWorld() is told to disable hardware lighting, so nothing
-    // reads it. Without this they would fall back to CPU pretransform and stay invisible to Remix.
-    const bool has_normals = (Normals != nullptr);
-    const bool hardware_lighting = has_normals && !unlit;
-    const Vector3 filler_normal {0.0f, 1.0f, 0.0f};
-
-    const u32* src_colors = base_colors ? base_colors : Colors;
-
-    // -flatnormals. Throw away the mesh's per-vertex normals and shade from the geometry instead.
-    //
-    // The stored normals are the least trustworthy thing in a .bms. They are 8-bit indices into a
-    // 198-entry table (agiworld/packnorm.h), so they are coarse to begin with, and they are stored
-    // per ADJUNCT while the positions are per VERTEX - so a model with coincident or otherwise
-    // stray vertices can carry a normal that points nowhere near the surface it is attached to.
-    // SmoothAdjunctNormals makes that worse rather than better where it fires, because it averages
-    // across every adjunct sharing a vertex position: two surfaces that merely happen to touch get
-    // blended into each other, which is the "wrongly shaded in some areas" look on city geometry.
-    //
-    // Flat mode sidesteps the stored normals entirely. Each facet gets the true normal of its own
-    // plane, computed from its own corner positions, and its corners are emitted as UNSHARED
-    // vertices so no facet can contaminate its neighbour. Nothing about the result depends on the
-    // vertex data being sane - only on the triangle having area.
-    //
-    // The sign still comes from the stored normals, deliberately: a cross product only defines the
-    // plane, not which side is outward, and the winding convention here is not something to bet on
-    // (see the long note in agidx9's MeshWorld about exactly that). Agreeing with the average of the
-    // facet's own stored normals keeps the artist's intended facing while replacing the direction,
-    // and a stray normal cannot flip the result because the vote is over the whole facet.
-    //
-    // Off by default. It is a real change in look - genuinely faceted, no smooth shading anywhere -
-    // and on well-formed meshes the stored normals are better.
-    const u32 flat_capacity = SurfaceCount * 4;
-
-    const bool flat_shading = has_normals && hardware_lighting && PARAM_flat_normals.get_or(false) &&
-        (flat_capacity <= kFlatVertexCap) && (SurfaceCount > 0);
 
     // Flat mode needs one vertex per facet corner rather than one per adjunct, and both bounds are
     // stack allocations for the reason documented above.
@@ -2233,8 +2421,7 @@ b32 agiMeshSet::DrawNativeTransform(u32 flags, bool static_lighting, const agiNa
         // Not for a skinned model: BuildSkinBindNormals has already averaged over the facets, from
         // the geometry rather than from the packed set, so this would be a second smoothing pass
         // over an input that no longer exists.
-        if (!skin && has_normals && PARAM_smooth_normals.get_or(true) && (VertexCount <= 4096) &&
-            (AdjunctCount <= 4096))
+        if (!skin && has_normals && smooth_wanted && (VertexCount <= 4096) && (AdjunctCount <= 4096))
         {
             smooth_normals = ARTS_ALLOCA(Vector3, AdjunctCount);
             Vector3* accum = ARTS_ALLOCA(Vector3, VertexCount);
@@ -2269,39 +2456,6 @@ b32 agiMeshSet::DrawNativeTransform(u32 flags, bool static_lighting, const agiNa
 
     u16* indices = ARTS_ALLOCA(u16, max_indices);
 
-    // Vehicle chrome. DrawLitSph cannot pass an fx down - it reaches here through DrawLit, whose
-    // signature the assembly owns - so it leaves the subject in agiNativeReflectivity /
-    // agiNativeReflectionTex and this assembles the fx. Same reason agiNativeDrawRadius exists.
-    //
-    // Gated on has_normals, and that gate is the whole point rather than defensive coding: the
-    // sphere map is indexed by the reflection of the eye vector about the vertex normal, so a mesh
-    // with no normals would reflect the same texel over its entire surface - a flat wash of one
-    // colour, which looks worse than no chrome at all.
-    agiNativeMaterialFx native_fx {};
-    const agiNativeMaterialFx* effective_fx = fx;
-
-    // Diagnostics. "Offered" counts draws that arrived with a sphere map selected, so
-    // offered == 0 means no caller is asking for chrome at all and the problem is upstream of here;
-    // offered > 0 with drawn == 0 means it is being asked for and refused, and the reason is the
-    // missing-normals count next to it.
-    const bool reflect_offered = !effective_fx && agiNativeReflectionTex && (agiNativeReflectivity > 0.0f);
-
-    if (reflect_offered && !has_normals)
-        ++agiReflectSkipNoNormals;
-
-    if (reflect_offered && has_normals)
-    {
-        ++agiReflectDraws;
-
-        native_fx.ReflectionTexture = agiNativeReflectionTex;
-        native_fx.ReflectionAmount = agiNativeReflectivity * PARAM_reflect_amount.get_or(0.35f);
-        native_fx.FresnelBias = PARAM_reflect_fresnel_bias.get_or(1.0f);
-        native_fx.FresnelScale = PARAM_reflect_fresnel_scale.get_or(0.0f);
-        native_fx.SpecularBoost = PARAM_reflect_specular.get_or(0.0f);
-
-        effective_fx = &native_fx;
-    }
-
     // The palette as the renderer receives it: the caller's, plus the slot table built above. Kept
     // as a local copy so the caller's struct - which describes the model, not this submission - is
     // not written through.
@@ -2313,8 +2467,11 @@ b32 agiMeshSet::DrawNativeTransform(u32 flags, bool static_lighting, const agiNa
         draw_skin.Slots = skin_slots;
     }
 
-    bool drawn = false;
-    u32 submitted_indices = 0;
+    // Every batch's indices back to back in the one buffer, which is the layout the cache keeps. The
+    // total cannot exceed max_indices, which is the worst case for all facets together.
+    agiNativeMeshBatch* batches = ARTS_ALLOCA(agiNativeMeshBatch, batch_count);
+    u32 batch_total = 0;
+    u32 index_total = 0;
 
     for (u32 texture = 0; texture < batch_count; ++texture)
     {
@@ -2323,7 +2480,7 @@ b32 agiMeshSet::DrawNativeTransform(u32 flags, bool static_lighting, const agiNa
         if (batch_start[texture] == batch_end)
             continue;
 
-        u32 index_count = 0;
+        const u32 first_index = index_total;
 
         for (u32 slot = batch_start[texture]; slot < batch_end; ++slot)
         {
@@ -2345,56 +2502,40 @@ b32 agiMeshSet::DrawNativeTransform(u32 flags, bool static_lighting, const agiNa
                 const u16 c3 = flat_shading ? static_cast<u16>(base + 3) : surface[3];
 
                 // Matches the diagonal split ClipTri uses for quads elsewhere in this file.
-                indices[index_count++] = c1;
-                indices[index_count++] = c2;
-                indices[index_count++] = c3;
-                indices[index_count++] = c1;
-                indices[index_count++] = c3;
-                indices[index_count++] = c0;
+                indices[index_total++] = c1;
+                indices[index_total++] = c2;
+                indices[index_total++] = c3;
+                indices[index_total++] = c1;
+                indices[index_total++] = c3;
+                indices[index_total++] = c0;
             }
             else
             {
-                indices[index_count++] = c0;
-                indices[index_count++] = c1;
-                indices[index_count++] = c2;
+                indices[index_total++] = c0;
+                indices[index_total++] = c1;
+                indices[index_total++] = c2;
             }
         }
 
-        if (index_count == 0)
+        if (index_total == first_index)
             continue;
 
-        agiTexDef* tex_def = TexCoords ? Textures[CurrentMeshSetVariant][texture] : nullptr;
-
-        auto old_texture = agiCurState.SetTexture(tex_def);
-
-        const u32 vertex_count = flat_shading ? flat_vertex_count : AdjunctCount;
-
-        if (RAST->MeshWorld(verts, static_cast<i32>(vertex_count), indices, static_cast<i32>(index_count),
-                skin ? skin->Bones[0] : view_params.World, view_params.View, view_params, static_lighting, effective_fx,
-                hardware_lighting, skin ? &draw_skin : nullptr))
-        {
-            drawn = true;
-            submitted_indices += index_count;
-        }
-
-        agiCurState.SetTexture(old_texture);
+        batches[batch_total++] = {texture, first_index, index_total - first_index};
     }
 
-    if (drawn)
+    const u32 vertex_count = flat_shading ? flat_vertex_count : AdjunctCount;
+
+    if (cacheable && (batch_total != 0))
     {
-        const u32 tris = submitted_indices / 3;
-
-        ++agiMeshNormalDraws;
-        agiMeshNormalTris += tris;
-
-        if (!has_normals)
+        if (const agiNativeCachedMesh* cached =
+                RAST->StoreNativeMesh(cache_key, verts, vertex_count, indices, index_total, batches, batch_total))
         {
-            ++agiMeshNormalDrawsFlat;
-            agiMeshNormalTrisFlat += tris;
+            return submit(cached->Vertices, cached->VertexCount, cached->Indices, cached->Batches, cached->BatchCount,
+                cached, nullptr);
         }
     }
 
-    return drawn;
+    return submit(verts, vertex_count, indices, batches, batch_total, nullptr, skin ? &draw_skin : nullptr);
 }
 
 i32 agiMeshSet::ShadowGeometry(u32 flags, Vector3* verts, const Vector4& plane, const Vector3& light_dir)

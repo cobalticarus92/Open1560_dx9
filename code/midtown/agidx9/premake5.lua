@@ -30,6 +30,8 @@ arts_component "agidx9"
         "dx9remixwet.cpp",
         "dx9remixwet.h",
         "dx9remixapi.h",
+        "dx9meshcache.cpp",
+        "dx9meshcache.h",
     }
 
     -- Deliberately no `links { "d3d9" }`. A link-time import binds d3d9.dll at process load, which

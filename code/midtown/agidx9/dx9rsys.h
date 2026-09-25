@@ -41,6 +41,10 @@ struct agiDX9SubmitCensus
 {
     u32 WorldCalls;
     u32 WorldTris;
+
+    // World draws that came from the mesh cache's device buffers rather than DrawIndexedPrimitiveUP.
+    // See dx9meshcache.h.
+    u32 WorldCachedCalls;
     u32 WorldStaticLitTris;
     u32 WorldUnlitTris;
 
@@ -96,6 +100,11 @@ void agiDX9InvalidateLightCache();
 // and the next write that matches it is skipped. See agiDX9WorldStateCache for the full argument.
 void agiDX9InvalidateStateCache();
 
+// Drops the render-state cache's record of the bound vertex and index buffer alone. For the world
+// mesh cache, when it releases buffers: a new buffer can be created at a released one's address, and
+// the record would then skip the bind that switches to it. See dx9meshcache.cpp.
+void agiDX9ForgetStreams();
+
 // Drops one texture from the stage-binding cache. Call before releasing an IDirect3DTexture9: the
 // cache compares raw pointers, and a freed allocation can be handed straight back out for the next
 // texture, at which point a stale entry would report the new texture as already bound and skip the
@@ -147,6 +156,12 @@ public:
         const agiNativeSkinPalette* skin = nullptr) override;
 
     u32 MaxNativeSkinBones() const override;
+
+    // The world mesh cache - see dx9meshcache.h.
+    bool CachesNativeMeshes() override;
+    const agiNativeCachedMesh* FindNativeMesh(u64 key) override;
+    const agiNativeCachedMesh* StoreNativeMesh(u64 key, const agiWorldVtx* vertices, u32 vertex_count,
+        const u16* indices, u32 index_count, const agiNativeMeshBatch* batches, u32 batch_count) override;
 
     // Runs that restore, but only if a world draw has left the device in its state.
     //
