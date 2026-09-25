@@ -232,6 +232,18 @@ street lamp or a tail lamp, which is small, bright and throws in all directions.
    are sent once and then only drawn.
 6. Draw every live light.
 
+All of this runs at the end of the 3D scene (`agiDX9Pipeline::EndScene`), not at the end of the
+frame. Remix path traces the frame at its first UI draw: an orthographic projection with depth
+writes off, or a texture in `rtx.uiTextures`, which the HUD normally is. `asCullManager::Update`
+draws every camera inside one scene and the HUD after it, so lights sent from `EndFrame` landed in
+the next frame, one frame's travel behind their lamps. `EndFrame` still sends them if a frame had
+no scene.
+
+A lamp is identified from frame to frame by its position in its owner's model space as well as by
+its predicted world position (`agiAddGlowLightRGB`), so frame-time jitter or a missed frame at
+speed no longer gives it a new identity and leaves the old light behind. A moving light whose
+sprite was not drawn this frame is not sent.
+
 The position is the last harvested one, never extrapolated. Submission runs after all of the
 frame's draws, so a light still being drawn is current. Pushing a fading light along its old
 velocity is what made lights fly off across the city in the programmable path.

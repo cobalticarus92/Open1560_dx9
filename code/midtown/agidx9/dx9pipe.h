@@ -178,6 +178,11 @@ private:
     Ptr<agiDX9Context> dx9_context_;
     Rc<agiDX9Rasterizer> rasterizer_;
     bool d3d_scene_active_ {};
+
+    // Whether this frame's Remix API lights have gone out yet. See SendRemixFrame.
+    bool remix_frame_sent_ {};
+
+    void SendRemixFrame();
 };
 
 Owner<agiPipeline> dx9CreatePipeline(i32 argc, char** argv);
