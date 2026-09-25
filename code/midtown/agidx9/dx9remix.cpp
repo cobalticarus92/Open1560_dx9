@@ -657,16 +657,19 @@ namespace
         u32 SetConfigVariable;
         u32 SetGameValue; // kNoSlot where the bridge has none
 
+        // The runtime behind this bridge updates a light in place when CreateLight is called again
+        // with its hash. See UpdateLight.
+        bool UpdateInPlace;
+
         // The scene half: materials, meshes, instances. Every known bridge forwards these.
+        //
+        // After UpdateInPlace, in the order the table below initialises them: the table is positional,
+        // so a field out of order silently shifts every value after it into the wrong slot.
         u32 CreateMaterial;
         u32 DestroyMaterial;
         u32 CreateMesh;
         u32 DestroyMesh;
         u32 DrawInstance;
-
-        // The runtime behind this bridge updates a light in place when CreateLight is called again
-        // with its hash. See UpdateLight.
-        bool UpdateInPlace;
     };
 
     constexpr BridgeLayout kBridgeLayouts[] {
@@ -679,7 +682,17 @@ namespace
             8, 10, 11, 12, 36, true, 1, 2, 3, 5, 7},
     };
 
-    // The last entry must describe the vendored header itself, and does.
+    // The last entry must describe the vendored header itself, and does - including the scene slots,
+    // which are checked against the header below through the table rather than by repeating numbers.
+    constexpr const BridgeLayout& kVendoredLayout = kBridgeLayouts[2];
+    static_assert(kVendoredLayout.UpdateInPlace, "table and BridgeLayout disagree about field order");
+    static_assert(kVendoredLayout.CreateMaterial * sizeof(AnyFn) == offsetof(remixapi_Interface, CreateMaterial),
+        "table and BridgeLayout disagree about field order");
+    static_assert(kVendoredLayout.DrawInstance * sizeof(AnyFn) == offsetof(remixapi_Interface, DrawInstance),
+        "table and BridgeLayout disagree about field order");
+    static_assert(kVendoredLayout.CreateLight * sizeof(AnyFn) == offsetof(remixapi_Interface, CreateLight),
+        "table and BridgeLayout disagree about field order");
+
     static_assert(offsetof(remixapi_Interface, CreateLight) == 8 * sizeof(AnyFn), "remix_c.h layout changed");
     static_assert(offsetof(remixapi_Interface, DestroyLight) == 10 * sizeof(AnyFn), "remix_c.h layout changed");
     static_assert(offsetof(remixapi_Interface, DrawLightInstance) == 11 * sizeof(AnyFn), "remix_c.h layout changed");
