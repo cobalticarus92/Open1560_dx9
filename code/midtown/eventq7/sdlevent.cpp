@@ -84,6 +84,8 @@ i32 SDLEventHandler::BeginGfx(i32 width, i32 height, b32 fullscreen)
 
 void SDLEventHandler::EndGfx()
 {
+    StopRelativeTracking();
+
     if (tracked_events_ & 0x1)
     {
         SDL_SetWindowMouseGrab(g_MainWindow, false);
@@ -97,6 +99,19 @@ void SDLEventHandler::EndGfx()
 
 void SDLEventHandler::Update(i32)
 {
+    // A camera asks for unbounded mouse input every frame it wants it (see BeginTracking). One that
+    // has stopped asking - cycled away, the race paused or over - gets the grabbed mouse back here,
+    // without having to announce that it stopped.
+    //
+    // After a few Updates rather than the first, so that a second Update within one frame (anything
+    // else that pumps the queue) cannot flip the mode back and forth.
+    tracking_idle_updates_ = tracking_requested_ ? 0 : (tracking_idle_updates_ + 1);
+
+    if (relative_tracking_ && (tracking_idle_updates_ >= 3))
+        StopRelativeTracking();
+
+    tracking_requested_ = false;
+
     SDL_PumpEvents();
 
     SDL_Event events[32];
@@ -124,11 +139,50 @@ void SDLEventHandler::Update(i32)
     }
 }
 
+// Unbounded mouse input for a camera that turns with the mouse - the orbital camera, the dashboard
+// camera's free look - requested again every frame it is wanted.
+//
+// In fullscreen the mouse is already in SDL's relative mode, and motion never runs out. Windowed, the
+// default (-mousemode 2) is a grabbed, hidden cursor instead, which is right for the menus but gives
+// a camera only as much travel as the window is wide: xrel stops at the edge, and the camera stops
+// turning with it. That is the orbital camera that would not go all the way round the car. So while a
+// camera asks for it, the grabbed mouse is switched to relative mode, and back when it stops asking
+// (see Update). The menu cursor is unaffected either way: HandleEvent moves it by xrel whenever the
+// mouse is relative.
 void SDLEventHandler::BeginTracking()
-{}
+{
+    tracking_requested_ = true;
+
+    if (relative_tracking_ || !(tracked_events_ & 0x1))
+        return;
+
+    relative_tracking_ = SDL_SetWindowRelativeMouseMode(g_MainWindow, true);
+}
 
 void SDLEventHandler::EndTracking()
-{}
+{
+    tracking_requested_ = false;
+    StopRelativeTracking();
+}
+
+void SDLEventHandler::StopRelativeTracking()
+{
+    if (!relative_tracking_)
+        return;
+
+    SDL_SetWindowRelativeMouseMode(g_MainWindow, false);
+    relative_tracking_ = false;
+
+    // The grabbed cursor maps to the game's through an offset (tracking_x_/y_). Wherever SDL left the
+    // OS cursor on the way out of relative mode, re-anchor the offset to it, so the game's cursor
+    // carries on from where it is rather than jumping.
+    f32 x = 0.0f;
+    f32 y = 0.0f;
+    SDL_GetMouseState(&x, &y);
+
+    tracking_x_ = static_cast<i32>(x) - mouse_x_;
+    tracking_y_ = static_cast<i32>(y) - mouse_y_;
+}
 
 const char* SDLEventHandler::GKeyName(i32 /*key*/)
 {
@@ -185,7 +239,7 @@ void SDLEventHandler::HandleEvent(const SDL_Event& event)
             mouse_virtual_x_ += static_cast<i32>(event.motion.xrel);
             mouse_virtual_y_ += static_cast<i32>(event.motion.yrel);
 
-            if (tracked_events_ & 0x1)
+            if ((tracked_events_ & 0x1) && !relative_tracking_)
             {
                 mouse_x_ = std::clamp(static_cast<i32>(event.motion.x) - tracking_x_, 0, mouse_width_);
                 mouse_y_ = std::clamp(static_cast<i32>(event.motion.y) - tracking_y_, 0, mouse_height_);

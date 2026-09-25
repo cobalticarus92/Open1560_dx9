@@ -39,4 +39,14 @@ private:
     i32 mouse_width_ {};
     i32 mouse_height_ {};
     bool mouse_moved_ {};
+
+    // See BeginTracking. Relative mouse mode switched on for a camera, over a grabbed mouse.
+    bool relative_tracking_ {};
+
+    // Whether BeginTracking was called since the last Update, and how many Updates in a row have
+    // gone by without it.
+    bool tracking_requested_ {};
+    u32 tracking_idle_updates_ {};
+
+    void StopRelativeTracking();
 };

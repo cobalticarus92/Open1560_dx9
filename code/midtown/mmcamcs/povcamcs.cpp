@@ -212,6 +212,11 @@ void PovCamCS::Update()
     {
         mouse_x = queue->GetMouseVirtualX();
         mouse_y = queue->GetMouseVirtualY();
+
+        // Free look needs mouse travel past the window's edge in windowed mode - see
+        // SDLEventHandler::BeginTracking.
+        if (PovHead.LookEnabled && !Sim()->IsPaused())
+            queue->BeginTracking();
     }
 
     // First frame in this camera: adopt the mouse position without acting on it, so a stretch spent

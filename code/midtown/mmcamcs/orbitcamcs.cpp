@@ -239,6 +239,12 @@ void OrbitCamCS::Update()
     {
         mouse_x = queue->GetMouseVirtualX();
         mouse_y = queue->GetMouseVirtualY();
+
+        // Unbounded mouse travel while this camera is in use, so it can go all the way round the car in
+        // a window too. Asked for every frame; the handler lets go once the requests stop. Not while
+        // paused - the mouse belongs to the menu then.
+        if (!Sim()->IsPaused())
+            queue->BeginTracking();
     }
 
     i32 step_x = std::clamp(mouse_x - PrevMouseX, -OrbitMaxMouseStep, OrbitMaxMouseStep);
