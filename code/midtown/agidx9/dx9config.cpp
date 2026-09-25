@@ -193,6 +193,8 @@ static constexpr const char* kConfigTemplate =
     "; Remix API. The game generates the puddle pattern from noise (cached in Open1560_RemixWet\\)\n"
     "; and the path tracer reflects the city in it. Needs remixapi = 1.\n"
     "remixwet = 1\n"
+    "; Wetness in every weather, 0 to 1, overriding the four below. -1 follows the weather.\n"
+    "remixwetlevel = -1\n"
     "; How wet the road is in each weather, 0 to 1.\n"
     "remixwetrain = 1.0\n"
     "remixwetsnow = 0.35\n"
@@ -770,9 +772,240 @@ static void WriteConfigTemplate(bool migrate)
     Displayf("Wrote default %s%s", kConfigName, migrate ? ", with the settings from Open1560-Shaders.ini" : "");
 }
 
+// SETTINGS A FILE DOES NOT HAVE YET
+//
+// The template is only written when there is no file, so a file from an older build never learns
+// about anything added since: its owner cannot see a setting to change it, and "the ini does not
+// have that" is indistinguishable from "the ini does nothing". So on load, every setting the template
+// has and the file lacks is appended at its default - a whole missing section verbatim, comments and
+// all, and a missing key under a repeat of its section header (which the loader takes as a switch
+// back to that section). Nothing already in the file is touched or reordered.
+//
+// Keys in an ordinary section are global switches, so one counts as present if it appears in any
+// ordinary section. [Glow...] keys belong to their section. Commented-out template keys (; cone = 25)
+// are documentation, not settings, and never appended.
+namespace
+{
+    struct PresentKey
+    {
+        char Section[64];
+        char Key[64];
+        bool Glow;
+    };
+} // namespace
+
+static bool IsGlowSectionName(const char* name)
+{
+    return StartsWithNoCase(name, "Glow.") || StartsWithNoCase(name, "Glow:");
+}
+
+static void UpgradeConfigFile(const char* file_name)
+{
+    static PresentKey present[512];
+    u32 present_count = 0;
+
+    char section_names[64][64] {};
+    u32 section_count = 0;
+
+    {
+        std::FILE* file = std::fopen(file_name, "rb");
+
+        if (!file)
+            return;
+
+        char line[512];
+        char current[64] {};
+
+        while (std::fgets(line, sizeof(line), file))
+        {
+            for (char* c = line; *c; ++c)
+            {
+                if ((*c == ';') || (*c == '#'))
+                {
+                    *c = '\0';
+                    break;
+                }
+            }
+
+            char* text = TrimInPlace(line);
+
+            if (*text == '[')
+            {
+                if (char* close = std::strchr(text, ']'))
+                    *close = '\0';
+
+                arts_strncpy(current, text + 1, ARTS_TRUNCATE);
+
+                if (section_count < ARTS_SIZE(section_names))
+                    arts_strncpy(section_names[section_count++], current, ARTS_TRUNCATE);
+
+                continue;
+            }
+
+            char* separator = std::strchr(text, '=');
+
+            if (!separator || (present_count >= ARTS_SIZE(present)))
+                continue;
+
+            *separator = '\0';
+
+            PresentKey& entry = present[present_count++];
+            arts_strncpy(entry.Section, current, ARTS_TRUNCATE);
+            arts_strncpy(entry.Key, TrimInPlace(text), ARTS_TRUNCATE);
+            entry.Glow = IsGlowSectionName(current);
+        }
+
+        std::fclose(file);
+    }
+
+    auto has_section = [&](const char* name) {
+        for (u32 i = 0; i < section_count; ++i)
+        {
+            if (EqualNoCase(section_names[i], name))
+                return true;
+        }
+
+        return false;
+    };
+
+    auto has_key = [&](const char* section, const char* key) {
+        const bool glow = IsGlowSectionName(section);
+
+        for (u32 i = 0; i < present_count; ++i)
+        {
+            if (!EqualNoCase(present[i].Key, key) || (present[i].Glow != glow))
+                continue;
+
+            if (!glow || EqualNoCase(present[i].Section, section))
+                return true;
+        }
+
+        return false;
+    };
+
+    // Walk the template. Lines are gathered per section: a missing section is copied whole, a missing
+    // key with the comment lines directly above it.
+    static char additions[16384];
+    usize additions_len = 0;
+
+    auto append = [&](const char* text, usize length) {
+        if ((additions_len + length + 1) < sizeof(additions))
+        {
+            std::memcpy(additions + additions_len, text, length);
+            additions_len += length;
+            additions[additions_len++] = '\n';
+        }
+    };
+
+    char current[64] {};
+    bool section_missing = false;
+    bool header_written = false;
+    const char* comment_start = nullptr;
+
+    for (const char* cursor = kConfigTemplate; *cursor;)
+    {
+        const char* line_end = std::strchr(cursor, '\n');
+        const usize length = line_end ? static_cast<usize>(line_end - cursor) : std::strlen(cursor);
+        const char* line_start = cursor;
+        cursor += length + (line_end ? 1 : 0);
+
+        char parsed[256] {};
+        std::memcpy(parsed, line_start, std::min<usize>(length, sizeof(parsed) - 1));
+        char* text = TrimInPlace(parsed);
+
+        if (*text == '[')
+        {
+            if (char* close = std::strchr(text, ']'))
+                *close = '\0';
+
+            arts_strncpy(current, text + 1, ARTS_TRUNCATE);
+            section_missing = !has_section(current);
+            header_written = false;
+            comment_start = nullptr;
+
+            if (section_missing)
+            {
+                append("", 0);
+                append(line_start, length);
+                header_written = true;
+            }
+
+            continue;
+        }
+
+        if (current[0] == '\0')
+            continue;
+
+        if (section_missing)
+        {
+            // The whole section, as the template has it - up to the divider that opens the next part.
+            if (!StartsWithNoCase(text, "; ---"))
+                append(line_start, length);
+
+            continue;
+        }
+
+        if (*text == ';')
+        {
+            if (!comment_start)
+                comment_start = line_start;
+
+            continue;
+        }
+
+        const char* separator = std::strchr(text, '=');
+
+        if (!separator)
+        {
+            comment_start = nullptr;
+            continue;
+        }
+
+        char key[64] {};
+        std::memcpy(key, text, std::min<usize>(static_cast<usize>(separator - text), sizeof(key) - 1));
+
+        if (!has_key(current, TrimInPlace(key)))
+        {
+            if (!header_written)
+            {
+                char header[80];
+                const i32 header_length = std::snprintf(header, sizeof(header), "[%s]", current);
+                append("", 0);
+                append(header, static_cast<usize>(std::max(header_length, 0)));
+                header_written = true;
+            }
+
+            const char* from = comment_start ? comment_start : line_start;
+            append(from, static_cast<usize>((line_start + length) - from));
+        }
+
+        comment_start = nullptr;
+    }
+
+    if (additions_len == 0)
+        return;
+
+    std::FILE* file = std::fopen(file_name, "ab");
+
+    if (!file)
+        return;
+
+    std::fputs("\n; ---------------------------------------------------------------------------------------------\n"
+               "; Added by a newer Open1560: settings this file did not have yet, at their defaults. Edit them\n"
+               "; here like any other; they are only ever added once.\n"
+               "; ---------------------------------------------------------------------------------------------\n",
+        file);
+    std::fwrite(additions, 1, additions_len, file);
+    std::fclose(file);
+
+    Displayf("%s: added the settings it did not have yet (see the end of the file)", file_name);
+}
+
 void agiDX9LoadRemixConfig()
 {
     i32 applied = 0;
+
+    UpgradeConfigFile(kConfigName);
 
     if (!LoadConfigFile(kConfigName, applied))
     {

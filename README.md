@@ -176,7 +176,7 @@ and restored afterwards. See [section 9 of the plan](docs/remix_api_plan.md#9-th
 **Wet roads.** While it rains, a puddle-and-damp layer is laid over the roads through the Remix
 API, and the path tracer reflects the city in it. The game generates the puddle pattern from noise
 (domain-warped, tiling, cached in `Open1560_RemixWet\`), and every road piece gets a world-space
-decal twin textured with it. Standing water is near-black and mirror-smooth, damp tarmac a darker,
+decal twin textured with it: roads, pavements, plazas and rooftops, anything upward-facing in the city's own world-space geometry. Standing water is near-black and mirror-smooth, damp tarmac a darker,
 glossier film. Everything else gets a little glossier too. Works on any bridge `-remixapi`
 connects to. Roads under cover get wet as well. See
 [section 11 of the plan](docs/remix_api_plan.md#11-wet-roads).
@@ -184,6 +184,7 @@ connects to. Roads under cover get wet as well. See
 | Switch | Default | Effect |
 | --- | --- | --- |
 | `-remixwet <0/1>` | 1 | Wet roads in wet weather (needs `-remixapi`). |
+| `-remixwetlevel <f>` | -1 | Wetness 0 to 1 in every weather, overriding the per-weather values; -1 follows the weather. |
 | `-remixwetrain`, `-remixwetsnow`, `-remixwetfog`, `-remixwetclear` | 1.0, 0.35, 0, 0 | Wetness for each game weather, 0 to 1. |
 | `-remixwetcoverage <f>` | 0.2 | Share of the road under standing water at full wetness. |
 | `-remixwettile <f>` | 64 | Size of the repeating puddle pattern, in world units. |

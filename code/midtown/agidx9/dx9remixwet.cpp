@@ -96,6 +96,9 @@ static mem::cmd_param PARAM_remixwet_fog {"remixwetfog", "Road wetness in fog, 0
 static mem::cmd_param PARAM_remixwet_rain {"remixwetrain", "Road wetness in rain, 0-1"};
 static mem::cmd_param PARAM_remixwet_snow {"remixwetsnow", "Road wetness in snow, 0-1"};
 
+static mem::cmd_param PARAM_remixwet_level {
+    "remixwetlevel", "Road wetness 0-1 regardless of weather (negative: follow the weather)"};
+
 static mem::cmd_param PARAM_remixwet_tile {"remixwettile", "Size of the repeating puddle pattern, in world units"};
 static mem::cmd_param PARAM_remixwet_coverage {"remixwetcoverage", "Share of the road under puddles at full wetness"};
 static mem::cmd_param PARAM_remixwet_seed {"remixwetseed", "Seed of the puddle pattern"};
@@ -591,19 +594,38 @@ static void DecideRace()
 
     s_race = RaceState::Off;
 
+    // Each way this can end up off says so, once a race: otherwise "no puddles" could mean any of them.
     if (!PARAM_remixwet.get_or(true))
+    {
+        Displayf("Remix wet roads: off (remixwet = 0)");
         return;
+    }
 
     const agiDX9RemixSceneApi* api = agiDX9RemixApiScene();
 
     if (!api)
+    {
+        Warningf("Remix wet roads: off - the bridge does not provide the material/mesh functions they need");
         return;
+    }
+
+    // -remixwetlevel, when set to 0..1, wins over the weather: the way to try the layer in clear weather,
+    // or to have a damp road in fog. Negative (the default) follows the weather.
+    const f32 forced = PARAM_remixwet_level.get_or(-1.0f);
+    const f32 wanted = (forced >= 0.0f) ? forced : WetnessForWeather(agiSkyEnv.Weather);
 
     // Quantised, so that small edits to the per-weather values do not each mint a texture pair.
-    s_level = std::round(std::clamp(WetnessForWeather(agiSkyEnv.Weather), 0.0f, 1.0f) * 20.0f) / 20.0f;
+    s_level = std::round(std::clamp(wanted, 0.0f, 1.0f) * 20.0f) / 20.0f;
 
     if (s_level <= 0.0f)
+    {
+        constexpr const char* kWeatherNames[4] {"clear", "fog", "rain", "snow"};
+
+        Displayf("Remix wet roads: off - this race's weather (%s) has wetness 0. Set remixwetlevel (0-1) in "
+                 "[RemixWet] to have them in any weather.",
+            kWeatherNames[std::clamp(agiSkyEnv.Weather, 0, 3)]);
         return;
+    }
 
     if (!PrepareTextures(s_level) || !CreateWetMaterial(*api, s_level))
         return;
@@ -773,13 +795,25 @@ void agiDX9RemixWetGround(
     if (!api)
         return;
 
+    // Every static world draw reaches this, every frame, so the key has to be cheap: the matrix, both
+    // counts, and a fixed sample of vertex positions and indices rather than all of them. City
+    // geometry is stored in world space, so two different pieces agreeing on all of that is not a
+    // practical concern.
     u64 key = 0xCBF29CE484222325ull;
     key = Fnv(&world, sizeof(Matrix34), key);
+    key = Fnv(&vertex_count, sizeof(vertex_count), key);
+    key = Fnv(&index_count, sizeof(index_count), key);
 
-    for (i32 i = 0; i < vertex_count; ++i)
-        key = Fnv(&vertices[i].pos, sizeof(Vector3), key);
+    constexpr i32 kSamples = 8;
 
-    key = Fnv(indices, static_cast<usize>(index_count) * sizeof(u16), key);
+    for (i32 k = 0; k < kSamples; ++k)
+    {
+        const i32 v = (vertex_count - 1) * k / (kSamples - 1);
+        const i32 i = (index_count - 1) * k / (kSamples - 1);
+
+        key = Fnv(&vertices[v].pos, sizeof(Vector3), key);
+        key = Fnv(&indices[i], sizeof(u16), key);
+    }
 
     if (key == 0)
         key = 1;

@@ -2679,6 +2679,20 @@ static bool HarvestHeadlightBeam(
     return true;
 }
 
+// Whether a draw's world matrix is the identity: city cell geometry, which is stored in world space.
+static bool IsIdentityWorld(const Matrix34& world)
+{
+    static constexpr f32 kEpsilon = 1e-4f;
+
+    // Not `near`: <windows.h> still defines near and far as empty macros, from 16-bit Windows.
+    auto close_to = [](f32 value, f32 target) { return std::fabs(value - target) <= kEpsilon; };
+
+    return close_to(world.m0.x, 1.0f) && close_to(world.m0.y, 0.0f) && close_to(world.m0.z, 0.0f) &&
+        close_to(world.m1.x, 0.0f) && close_to(world.m1.y, 1.0f) && close_to(world.m1.z, 0.0f) &&
+        close_to(world.m2.x, 0.0f) && close_to(world.m2.y, 0.0f) && close_to(world.m2.z, 1.0f) &&
+        close_to(world.m3.x, 0.0f) && close_to(world.m3.y, 0.0f) && close_to(world.m3.z, 0.0f);
+}
+
 // White and warm flares on a glow mesh's front half count as headlights - see HarvestWorldGlow.
 static mem::cmd_param PARAM_glow_front_headlights {
     "glowfrontheadlights", "Treat white flares on the front of a vehicle as headlights, not street lamps"};
@@ -3066,9 +3080,21 @@ bool agiDX9Rasterizer::MeshWorld(agiWorldVtx* vertices, i32 vertex_count, u16* i
     if (agiGlowHarvestEnabled && additive_glow && Pipe()->IsInScene())
         HarvestWorldGlow(native_tex, vertices, indices, index_count, world);
 
-    // The wet-road layer's twin of this road piece, drawn alongside it. See dx9remixwet.cpp.
-    if (agiNativeGroundDraw && !skin && agiDX9RemixApiActive() && Pipe()->IsInScene())
+    // The wet layer's twin of this piece of city, drawn alongside it. See dx9remixwet.cpp.
+    //
+    // Not only DrawLitEnv's draws. mmCellRenderer::Cull sends a cell's road and terrain through
+    // DrawLitEnv only at some LODs and for cells without a flag bit set, and DrawLitEnv only reaches
+    // this path when the mesh has normals; everything else goes DrawLit(nullptr) -> Draw(), unflagged.
+    // Keyed on that alone, most of the road was never offered. What city cell geometry does have in
+    // common is an identity world matrix - it is stored in world space - where cars, props and bangers
+    // carry their own. The layer keeps only upward-facing triangles, so walls drop out (and are
+    // remembered as having nothing, so they cost a lookup from then on); rooftops take puddles too,
+    // which in the rain is right.
+    if (!skin && !additive_glow && agiDX9RemixApiActive() && Pipe()->IsInScene() &&
+        (agiNativeGroundDraw || IsIdentityWorld(world)))
+    {
         agiDX9RemixWetGround(vertices, vertex_count, indices, index_count, world);
+    }
 
     // Fog for this draw is decided in one place further down, once remap_vertex_fog is known - see
     // the vertex-fog remap. Additive glows want it off for the same reason as the screen path (see
