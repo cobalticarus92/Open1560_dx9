@@ -108,6 +108,8 @@ These act on the world-space path, so they apply to this backend only.
 | `-d3d9meshcachemb <n>` | 64 | Memory the mesh cache may use, in MB. When full, it drops the meshes drawn least recently. |
 | `-nocull` | off | Disable backface, LOD and distance culling. A path tracer wants closed shells; a back face it never receives is a hole light leaks through. |
 | `-smoothnormals <0/1>` | 1 | Rebuild smooth vertex normals in float. The engine stores normals as an index into a 198-entry table, coarse enough that a facet's corners often quantise to one direction and shade flat. |
+| `-geonormals <0/1/2>` | 2 | Where world vertex normals come from. A mesh has normals only if its baked `.bms` does, and most city scenery was shipped without them. Those went out with a straight-up filler normal, which RTX Remix shaded every wall with. The rest store one of 198 directions per corner, about 14 degrees apart, which shades curved panels in bands. `0` submits what was shipped; `1` rebuilds missing normals from the geometry; `2` rebuilds all of them (area-weighted, crease-aware, facing the way the engine's backface test does). The census line `DX9 NORMALS` reports coverage. |
+| `-geonormalangle <deg>` | 45 | Crease angle for the rebuild: faces meeting more sharply keep a hard edge. |
 | `-flatnormals` | off | Shade from facet geometry, ignoring stored vertex normals. |
 | `-nativecpucull` | off | Cull backfacing facets on the CPU. **Breaks Remix hash stability.** |
 | `-pedskin` | off | Skin pedestrians on the CPU. **Breaks Remix hash stability.** |

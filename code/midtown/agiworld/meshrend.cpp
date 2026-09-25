@@ -1699,6 +1699,44 @@ static mem::cmd_param PARAM_smooth_normals {"smoothnormals", "Rebuild smooth ver
 // -flatnormals. See the long note at its use in DrawNativeTransform.
 static mem::cmd_param PARAM_flat_normals {"flatnormals", "Shade from facet geometry, ignoring stored vertex normals"};
 
+// -geonormals. Where the vertex normals the hardware path submits come from.
+//
+//   0 - the mesh's stored normals (smoothed, see -smoothnormals), and (0,1,0) filler for a mesh that
+//       has none. What this path always did.
+//   1 - rebuilt from the geometry for meshes with no stored normals; stored ones as for 0.
+//   2 - rebuilt from the geometry for every mesh. The default.
+//
+// WHERE THE NORMALS LIVE, AND WHY THEY ARE NOT GOOD ENOUGH
+//
+// A mesh is a .bms, and GetMeshSet loads it with the flags BAKED INTO THE FILE (game.asm ~336700:
+// the requested flags are only used when the mesh is built from its .dlp source, which the shipped
+// game does not include). So a mesh has normals exactly when the tool that baked it wrote them, and:
+//
+//   * Most city scenery was baked without them. mmInstance::InitMeshes only asks for normals on
+//     colliders, movers and obstacles, and the census "normals=a/b draws flat" line counts how many
+//     draws in a frame have none. Those went to the device with a filler normal of (0,1,0) on every
+//     vertex. The raster never read it - they draw unlit from their baked colours - but RTX Remix
+//     does: it shades every surface from the vertex normals it is handed, so every wall in the city
+//     was being lit as if it were a floor.
+//   * Where they exist they are one byte per adjunct: an index into UnpackNormal, a 198-direction
+//     table (agiworld/packnorm.cpp). That is roughly 14 degrees between neighbouring directions, so
+//     a gently curved panel's corners snap to a few shared directions and shade in visible bands, and
+//     a surface's true normal can be up to ~7 degrees from anything the table can express.
+//
+// There is no better copy anywhere in the shipped data - the float normals the baker started from
+// lived in the .dlp sources. What does survive at full precision is the geometry itself, so the
+// rebuild derives normals from that: see BuildGeometricNormals.
+static mem::cmd_param PARAM_geo_normals {
+    "geonormals", "Rebuild vertex normals from geometry (0 off, 1 meshes without normals, 2 all)"};
+
+// -geonormalangle. Crease angle for the rebuild, in degrees: faces meeting at a sharper angle than
+// this keep a hard edge, shallower ones are smoothed across.
+static mem::cmd_param PARAM_geo_normal_angle {"geonormalangle", "Crease angle for rebuilt vertex normals, in degrees"};
+
+u32 agiMeshGeoNormalBuilds = 0;
+u32 agiMeshGeoNormalFlips = 0;
+u32 agiMeshGeoNormalSkipped = 0;
+
 // -nocull. Every form of culling this codebase can reach, off at once.
 //
 // For an RTX Remix capture the useful frame is the one containing the most geometry, not the one
@@ -1845,6 +1883,259 @@ static void SmoothAdjunctNormals(Vector3* ARTS_RESTRICT out_normals, const u16* 
         // Keep the facet's own normal wherever smoothing would round off a real edge.
         out_normals[a] = ((averaged ^ own) >= kHardEdgeCos) ? averaged : own;
     }
+}
+
+static u32 GeoNormalMode()
+{
+    static const u32 mode = static_cast<u32>(std::clamp(PARAM_geo_normals.get_or(2), 0, 2));
+
+    return mode;
+}
+
+static f32 GeoNormalCreaseCos()
+{
+    static const f32 cos_angle =
+        std::cos(std::clamp(PARAM_geo_normal_angle.get_or(45.0f), 0.0f, 180.0f) * (3.14159265f / 180.0f));
+
+    return cos_angle;
+}
+
+// The rebuild's size limits. Its scratch is on the stack, for the reason documented at length at the
+// ARTS_ALLOCA note in DrawNativeTransform, and at these limits it is ~200 KB. Larger meshes keep
+// their stored normals (or the filler); the census counts them as skipped.
+inline constexpr u32 kGeoNormalMaxSurfaces = 4096;
+inline constexpr u32 kGeoNormalMaxAdjuncts = 8192;
+inline constexpr u32 kGeoNormalMaxVertices = 8192;
+
+// Per-adjunct vertex normals from the mesh's own positions and facets.
+//
+// Which side is out. A cross product only defines a plane; the sign comes from the engine's own
+// backface test, which is the authority on which side of a facet is its front. ComputePlaneEquations
+// builds each facet's plane from its first three corners as ~((v2 - v1) % (v0 - v1)), and
+// IsBackfacing culls a facet when the eye is on the NEGATIVE side of that plane - so the plane normal
+// points toward whoever can see the facet. (v2 - v1) x (v0 - v1) is (v1 - v0) x (v2 - v0) by cyclic
+// symmetry, which is the face normal used here, so rebuilt normals face the way the engine already
+// draws them. For a quad, (v2 - v0) x (v3 - v1) is the same orientation and weighs all four corners.
+//
+// Where the mesh has stored normals too, they vote on the sign across the whole mesh, as a check: a
+// negative vote means the mesh disagrees with the convention (it would have to be wound inside out)
+// and the result is flipped. It is one bit per mesh, so a few stray stored normals cannot move it,
+// and the census counts every flip - a count that is not ~0 would mean the convention is wrong.
+//
+// Smoothing. Each facet corner takes the area-weighted average of the facets around its position
+// whose normal is within the crease angle of its own facet's, so a curved panel shades smoothly and a
+// box keeps its edges. Corners are averaged into their adjunct, which is what is submitted. Positions
+// are welded first (bit-identical coordinates count as one vertex), so a seam where the baker
+// duplicated a vertex does not show as a crease.
+//
+// Returns false, leaving `out_normals` untouched, when the mesh is over the size limits.
+static bool BuildGeometricNormals(Vector3* ARTS_RESTRICT out_normals, const Vector3* ARTS_RESTRICT vertices,
+    const u16* ARTS_RESTRICT vertex_indices, const u16* ARTS_RESTRICT surface_indices, const u8* ARTS_RESTRICT packed,
+    u32 surface_count, u32 adjunct_count, u32 vertex_count, const Vector3& filler)
+{
+    if ((surface_count == 0) || (surface_count > kGeoNormalMaxSurfaces) || (adjunct_count > kGeoNormalMaxAdjuncts) ||
+        (vertex_count > kGeoNormalMaxVertices))
+        return false;
+
+    // Weld: each vertex maps to the first vertex with bit-identical coordinates. Open addressing over
+    // a power-of-two table at most half full.
+    u32 table_size = 16;
+
+    while (table_size < vertex_count * 2)
+        table_size *= 2;
+
+    u16* weld = ARTS_ALLOCA(u16, vertex_count);
+    u16* table = ARTS_ALLOCA(u16, table_size);
+
+    for (u32 i = 0; i < table_size; ++i)
+        table[i] = 0xFFFF;
+
+    for (u32 v = 0; v < vertex_count; ++v)
+    {
+        u32 bits[3];
+        std::memcpy(bits, &vertices[v], sizeof(bits));
+
+        // -0.0 and 0.0 are the same position.
+        for (u32& bit : bits)
+        {
+            if (bit == 0x80000000u)
+                bit = 0;
+        }
+
+        u32 slot = (bits[0] * 0x9E3779B1u ^ bits[1] * 0x85EBCA77u ^ bits[2] * 0xC2B2AE3Du) & (table_size - 1);
+
+        for (;; slot = (slot + 1) & (table_size - 1))
+        {
+            if (table[slot] == 0xFFFF)
+            {
+                table[slot] = static_cast<u16>(v);
+                weld[v] = static_cast<u16>(v);
+                break;
+            }
+
+            const Vector3& other = vertices[table[slot]];
+
+            if ((other.x == vertices[v].x) && (other.y == vertices[v].y) && (other.z == vertices[v].z))
+            {
+                weld[v] = table[slot];
+                break;
+            }
+        }
+    }
+
+    // Facet normals: unit direction and area weight.
+    Vector3* face_dir = ARTS_ALLOCA(Vector3, surface_count);
+    f32* face_area = ARTS_ALLOCA(f32, surface_count);
+
+    f32 vote = 0.0f;
+
+    for (u32 facet = 0; facet < surface_count; ++facet)
+    {
+        const u16* ARTS_RESTRICT surface = &surface_indices[facet * 4];
+
+        const Vector3& p0 = vertices[vertex_indices[surface[0]]];
+        const Vector3& p1 = vertices[vertex_indices[surface[1]]];
+        const Vector3& p2 = vertices[vertex_indices[surface[2]]];
+
+        Vector3 face;
+
+        if (surface[3])
+            face.Cross(p2 - p0, vertices[vertex_indices[surface[3]]] - p1);
+        else
+            face.Cross(p1 - p0, p2 - p0);
+
+        const f32 mag2 = face.Mag2();
+
+        if (mag2 > 1.0e-12f)
+        {
+            const f32 mag = std::sqrt(mag2);
+            face_dir[facet] = face * (1.0f / mag);
+            face_area[facet] = mag;
+        }
+        else
+        {
+            // No area, so no plane: contributes nothing, and its corners take their normals from the
+            // facets around them.
+            face_dir[facet] = {0.0f, 0.0f, 0.0f};
+            face_area[facet] = 0.0f;
+        }
+
+        if (packed)
+        {
+            const u32 corners = surface[3] ? 4u : 3u;
+
+            Vector3 stored {};
+
+            for (u32 k = 0; k < corners; ++k)
+                stored += UnpackNormal[packed[surface[k]]];
+
+            vote += face ^ stored;
+        }
+    }
+
+    const f32 sign = (vote < 0.0f) ? -1.0f : 1.0f;
+
+    if (vote < 0.0f)
+        ++agiMeshGeoNormalFlips;
+
+    // Facets around each welded vertex, as a compressed list: first[v]..first[v + 1].
+    u32* first = ARTS_ALLOCA(u32, vertex_count + 1);
+
+    for (u32 v = 0; v <= vertex_count; ++v)
+        first[v] = 0;
+
+    for (u32 facet = 0; facet < surface_count; ++facet)
+    {
+        const u16* ARTS_RESTRICT surface = &surface_indices[facet * 4];
+        const u32 corners = surface[3] ? 4u : 3u;
+
+        for (u32 k = 0; k < corners; ++k)
+            ++first[weld[vertex_indices[surface[k]]] + 1];
+    }
+
+    for (u32 v = 0; v < vertex_count; ++v)
+        first[v + 1] += first[v];
+
+    u16* around = ARTS_ALLOCA(u16, first[vertex_count]);
+    u32* cursor = ARTS_ALLOCA(u32, vertex_count);
+
+    for (u32 v = 0; v < vertex_count; ++v)
+        cursor[v] = first[v];
+
+    for (u32 facet = 0; facet < surface_count; ++facet)
+    {
+        const u16* ARTS_RESTRICT surface = &surface_indices[facet * 4];
+        const u32 corners = surface[3] ? 4u : 3u;
+
+        for (u32 k = 0; k < corners; ++k)
+            around[cursor[weld[vertex_indices[surface[k]]]]++] = static_cast<u16>(facet);
+    }
+
+    const f32 crease_cos = GeoNormalCreaseCos();
+
+    Vector3* accum = ARTS_ALLOCA(Vector3, adjunct_count);
+
+    for (u32 a = 0; a < adjunct_count; ++a)
+        accum[a] = {0.0f, 0.0f, 0.0f};
+
+    for (u32 facet = 0; facet < surface_count; ++facet)
+    {
+        if (face_area[facet] == 0.0f)
+            continue;
+
+        const Vector3& own = face_dir[facet];
+
+        const u16* ARTS_RESTRICT surface = &surface_indices[facet * 4];
+        const u32 corners = surface[3] ? 4u : 3u;
+
+        for (u32 k = 0; k < corners; ++k)
+        {
+            const u32 v = weld[vertex_indices[surface[k]]];
+
+            Vector3 sum {};
+
+            for (u32 i = first[v]; i < first[v + 1]; ++i)
+            {
+                const u32 other = around[i];
+
+                if ((face_dir[other] ^ own) >= crease_cos)
+                    sum += face_dir[other] * face_area[other];
+            }
+
+            // Never empty - the facet itself always passes - but its own direction stands in if the
+            // sum cancels out.
+            const f32 mag2 = sum.Mag2();
+
+            accum[surface[k]] += (mag2 > 1.0e-12f) ? sum * (1.0f / std::sqrt(mag2)) : own;
+        }
+    }
+
+    for (u32 a = 0; a < adjunct_count; ++a)
+    {
+        Vector3 normal = accum[a];
+
+        // Referenced only by facets with no area (a sliver collapsed onto an edge, a fan's apex), or by
+        // none. Take the plain average of every facet around its position instead - still the
+        // surface it sits on - and only fall back when there is no surface there at all.
+        if (normal.Mag2() <= 1.0e-12f)
+        {
+            const u32 v = weld[vertex_indices[a]];
+
+            for (u32 i = first[v]; i < first[v + 1]; ++i)
+                normal += face_dir[around[i]] * face_area[around[i]];
+        }
+
+        const f32 mag2 = normal.Mag2();
+
+        if (mag2 > 1.0e-12f)
+            out_normals[a] = normal * (sign / std::sqrt(mag2));
+        else
+            out_normals[a] = packed ? UnpackNormal[packed[a]] : filler;
+    }
+
+    ++agiMeshGeoNormalBuilds;
+
+    return true;
 }
 
 // Bind-pose vertex normals for a skinned model, rebuilt from the mesh's own geometry.
@@ -2074,8 +2365,9 @@ b32 agiMeshSet::DrawNativeTransform(u32 flags, bool static_lighting, const agiNa
     // Meshes loaded without MESH_SET_NORMAL have no normals at all (mmInstance::InitMeshes only
     // requests them for COLLIDER/MOVER instances, so most static scenery and the low-detail LODs
     // go without). Those draw unlit from their baked Colors on the CPU path, and do the same here -
-    // the normal field is filler and MeshWorld() is told to disable hardware lighting, so nothing
-    // reads it. Without this they would fall back to CPU pretransform and stay invisible to Remix.
+    // MeshWorld() is told to disable hardware lighting, so the raster never reads their normals.
+    // RTX Remix does, which is why -geonormals rebuilds them rather than leaving filler. Without
+    // this they would fall back to CPU pretransform and stay invisible to Remix.
     const bool has_normals = (Normals != nullptr);
     const bool hardware_lighting = has_normals && !unlit;
     const Vector3 filler_normal {0.0f, 1.0f, 0.0f};
@@ -2215,7 +2507,10 @@ b32 agiMeshSet::DrawNativeTransform(u32 flags, bool static_lighting, const agiNa
         hasher.Mix(SurfaceCount);
         hasher.Mix(TextureCount);
         hasher.Mix((flat_shading ? 1u : 0u) | (smooth_wanted ? 2u : 0u) | (has_normals ? 4u : 0u) |
-            (TexCoords ? 8u : 0u) | (src_colors ? 16u : 0u));
+            (TexCoords ? 8u : 0u) | (src_colors ? 16u : 0u) | (GeoNormalMode() << 5));
+
+        const f32 crease_cos = GeoNormalCreaseCos();
+        hasher.Bytes(&crease_cos, sizeof(crease_cos));
 
         hasher.Bytes(Vertices, VertexCount * sizeof(Vector3));
         hasher.Bytes(VertexIndices, AdjunctCount * sizeof(u16));
@@ -2418,10 +2713,26 @@ b32 agiMeshSet::DrawNativeTransform(u32 flags, bool static_lighting, const agiNa
         // of how the lighting is evaluated.
         Vector3* smooth_normals = nullptr;
 
+        // Normals rebuilt from the geometry - see -geonormals and BuildGeometricNormals. Preferred over
+        // the stored set when present. Not for a skinned model, which has its own (bind_normals).
+        Vector3* geo_normals = nullptr;
+
+        if (const u32 geo_mode = GeoNormalMode(); !skin && ((geo_mode == 2) || ((geo_mode == 1) && !has_normals)))
+        {
+            geo_normals = ARTS_ALLOCA(Vector3, AdjunctCount);
+
+            if (!BuildGeometricNormals(geo_normals, Vertices, VertexIndices, SurfaceIndices, Normals, SurfaceCount,
+                    AdjunctCount, VertexCount, filler_normal))
+            {
+                geo_normals = nullptr;
+                ++agiMeshGeoNormalSkipped;
+            }
+        }
+
         // Not for a skinned model: BuildSkinBindNormals has already averaged over the facets, from
         // the geometry rather than from the packed set, so this would be a second smoothing pass
         // over an input that no longer exists.
-        if (!skin && has_normals && smooth_wanted && (VertexCount <= 4096) && (AdjunctCount <= 4096))
+        if (!skin && !geo_normals && has_normals && smooth_wanted && (VertexCount <= 4096) && (AdjunctCount <= 4096))
         {
             smooth_normals = ARTS_ALLOCA(Vector3, AdjunctCount);
             Vector3* accum = ARTS_ALLOCA(Vector3, VertexCount);
@@ -2444,6 +2755,8 @@ b32 agiMeshSet::DrawNativeTransform(u32 flags, bool static_lighting, const agiNa
 
             if (bind_normals)
                 normal = bind_normals[a];
+            else if (geo_normals)
+                normal = geo_normals[a];
             else if (has_normals)
                 normal = smooth_normals ? smooth_normals[a] : UnpackNormal[Normals[a]];
 

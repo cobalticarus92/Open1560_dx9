@@ -576,6 +576,18 @@ void agiDX9Pipeline::EndFrame()
             agiDX9DumpAttribution();
             agiDX9RemixApiLogStats(census_frames);
             agiDX9RemixWetLogStats(census_frames);
+            // Where the submitted vertex normals came from. See -geonormals in agiworld/meshrend.cpp.
+            // "against stored" should stay at or near zero: it counts meshes whose own stored normals
+            // disagreed with the winding the rebuild takes as outward.
+            Displayf("DX9 NORMALS: frame=%u draws without stored normals=%u/%u | since last: rebuilt from geometry=%u "
+                     "meshes (%u against stored, %u too large)",
+                census_frames, agiMeshNormalDrawsFlat, agiMeshNormalDraws, agiMeshGeoNormalBuilds,
+                agiMeshGeoNormalFlips, agiMeshGeoNormalSkipped);
+
+            agiMeshGeoNormalBuilds = 0;
+            agiMeshGeoNormalFlips = 0;
+            agiMeshGeoNormalSkipped = 0;
+
             agiDX9MeshCacheLogStats(census_frames, agiDX9Census.WorldCachedCalls, agiDX9Census.WorldCalls);
         }
 

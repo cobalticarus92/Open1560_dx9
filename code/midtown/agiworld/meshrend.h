@@ -47,14 +47,22 @@ ARTS_IMPORT extern u32 SphMapColor;
 //
 // A mesh loaded without MESH_SET_NORMAL has no normal array at all - mmInstance::InitMeshes only
 // asks for one when the instance is a collider, a mover or an obstacle, and every other instance
-// gets MESH_SET_UV | MESH_SET_NO_BOUND. Those draws go out with a filler normal of (0,1,0) on every
-// vertex and hardware lighting disabled, which is faithful to what the CPU path did with them, but
-// it does mean anything normal-driven - hardware lighting, the sphere map, any future normal
-// mapping - has nothing to work from.
+// gets MESH_SET_UV | MESH_SET_NO_BOUND. (Strictly, a mesh has normals when its baked .bms does - the
+// requested flags only matter when building from a .dlp source.) Those draws have hardware lighting
+// disabled, which is faithful to what the CPU path did with them; the normals they submit are
+// rebuilt from the geometry by default (-geonormals), because RTX Remix shades from them regardless.
 extern u32 agiMeshNormalDraws;
 extern u32 agiMeshNormalDrawsFlat;
 extern u32 agiMeshNormalTris;
 extern u32 agiMeshNormalTrisFlat;
+
+// -geonormals: meshes whose normals were rebuilt from geometry, how many of those disagreed with the
+// winding convention against their own stored normals (should stay ~0), and how many were too large
+// to rebuild. Counted per build, so with the mesh cache on a mesh counts once, not once per frame.
+// Not reset by agiResetMeshNormalStats: the census clears them after each report instead.
+extern u32 agiMeshGeoNormalBuilds;
+extern u32 agiMeshGeoNormalFlips;
+extern u32 agiMeshGeoNormalSkipped;
 
 void agiResetMeshNormalStats();
 
