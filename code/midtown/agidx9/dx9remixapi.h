@@ -34,8 +34,14 @@
 // one. That is true and beside the point - we only use its types, and the bridge client that
 // implements them IS 32-bit. The Remix Plus API reference documents exactly this use.
 //
+// dx9_windows.h first, always: remix_c.h includes <windows.h> itself, and whichever inclusion comes
+// first decides whether min/max are macros. Without NOMINMAX (set by core/minwin.h, which
+// dx9_windows.h pulls in) they are, and every std::min/std::max/std::clamp after this header breaks.
+//
 // REMIX_WINAPI_NO_LIBRARY_LOADER: skips the header's inline DLL loader. We never load the runtime
 // ourselves; the bridge client is already the process's D3D9 module.
+#include "dx9_windows.h"
+
 #pragma warning(push, 0)
 #ifdef __clang__
 #    pragma clang diagnostic push

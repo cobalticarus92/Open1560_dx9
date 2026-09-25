@@ -34,6 +34,10 @@
 #include <memory>
 #include <mutex>
 
+// std::fopen is deprecated by MSVC and this build is /WX. Writing two texture files next to the game
+// is not the unsafety the deprecation is aimed at - same treatment and reasoning as dx9config.cpp.
+#pragma warning(disable : 4996)
+
 define_dummy_symbol(agidx9_dx9remixwet);
 
 // HOW IT WORKS
